@@ -12,6 +12,28 @@
 
 ---
 
+## 截图预览
+
+<p align="center">
+  <img src="docs/screenshot_main.png" alt="主界面 - 深色主题" width="70%">
+  <br>
+  <em>主界面 - 左侧导航栏 / 文件列表 / 深色主题</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshot_scan.png" alt="扫描管理界面" width="70%">
+  <br>
+  <em>扫描管理 - 目录选择 / 进度显示 / 扫描选项</em>
+</p>
+
+<p align="center">
+  <img src="docs/screenshot_tags.png" alt="标签管理界面" width="70%">
+  <br>
+  <em>分类与标签 - 分类树 / 标签云 / 文件关联</em>
+</p>
+
+---
+
 ## 目录
 
 - [功能概述](#功能概述)
