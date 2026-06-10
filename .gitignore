@@ -7,6 +7,9 @@
 # 日志目录
 logs/
 
+# 代码索引工具（IDE 自动生成）
+.codegraph/
+
 # Python 缓存
 __pycache__/
 *.pyc

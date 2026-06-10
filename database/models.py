@@ -78,11 +78,10 @@ class FileDAO:
         return self.db.execute_update(
             "UPDATE files SET status = %s WHERE id = %s", (status, file_id))
 
-    def search(self, name: Optional[str] = None, file_type: Optional[str] = None,
-               extension: Optional[str] = None, min_size: Optional[int] = None,
-               max_size: Optional[int] = None, start_date: Optional[str] = None,
-               end_date: Optional[str] = None,
-               is_duplicate: Optional[int] = None) -> list:
+    def _build_search_conditions(self, name=None, file_type=None, extension=None,
+                                  min_size=None, max_size=None, start_date=None,
+                                  end_date=None, is_duplicate=None):
+        """构建搜索条件（供 search/search_paginated/search_count 复用）"""
         conditions = ["status = 'active'"]
         params = []
         if name:
@@ -109,10 +108,39 @@ class FileDAO:
         if is_duplicate is not None:
             conditions.append("is_duplicate = %s")
             params.append(is_duplicate)
+        return " AND ".join(conditions), params
 
-        where = " AND ".join(conditions)
+    def search(self, name: Optional[str] = None, file_type: Optional[str] = None,
+               extension: Optional[str] = None, min_size: Optional[int] = None,
+               max_size: Optional[int] = None, start_date: Optional[str] = None,
+               end_date: Optional[str] = None,
+               is_duplicate: Optional[int] = None) -> list:
+        where, params = self._build_search_conditions(
+            name, file_type, extension, min_size, max_size, start_date, end_date, is_duplicate)
         sql = f"SELECT * FROM files WHERE {where} ORDER BY modify_time DESC"
         return self.db.execute_query(sql, tuple(params))
+
+    def search_paginated(self, page: int = 0, page_size: int = 100,
+                         name=None, file_type=None, extension=None,
+                         min_size=None, max_size=None, start_date=None,
+                         end_date=None, is_duplicate=None) -> list:
+        """分页搜索，返回当前页结果"""
+        where, params = self._build_search_conditions(
+            name, file_type, extension, min_size, max_size, start_date, end_date, is_duplicate)
+        offset = page * page_size
+        sql = f"SELECT * FROM files WHERE {where} ORDER BY modify_time DESC LIMIT %s OFFSET %s"
+        params.extend([page_size, offset])
+        return self.db.execute_query(sql, tuple(params))
+
+    def search_count(self, name=None, file_type=None, extension=None,
+                     min_size=None, max_size=None, start_date=None,
+                     end_date=None, is_duplicate=None) -> int:
+        """搜索总数（用于分页计算）"""
+        where, params = self._build_search_conditions(
+            name, file_type, extension, min_size, max_size, start_date, end_date, is_duplicate)
+        sql = f"SELECT COUNT(*) as total FROM files WHERE {where}"
+        row = self.db.execute_one(sql, tuple(params))
+        return row['total'] if row else 0
 
     def get_duplicates(self) -> list:
         sql = """SELECT file_hash, COUNT(*) as cnt

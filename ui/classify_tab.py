@@ -104,6 +104,39 @@ class ReclassifyWorker(QThread):
             conn.close()
 
 
+class BatchOperationWorker(QThread):
+    """后台批量操作工作线程（重命名/移动）"""
+    progress = pyqtSignal(int, int, str)  # current, total, status
+    finished = pyqtSignal(dict)  # results
+    error = pyqtSignal(str)
+
+    def __init__(self, operation_func, file_ids: list, extra_args=None, parent=None):
+        super().__init__(parent)
+        self.operation_func = operation_func
+        self.file_ids = file_ids
+        self.extra_args = extra_args or {}
+        self._cancelled = False
+
+    def cancel(self):
+        self._cancelled = True
+
+    def run(self):
+        results = {'success': 0, 'failed': 0, 'errors': []}
+        total = len(self.file_ids)
+        for i, fid in enumerate(self.file_ids):
+            if self._cancelled:
+                break
+            self.progress.emit(i + 1, total, f"处理中 ({i+1}/{total})...")
+            try:
+                self.operation_func(fid, **self.extra_args)
+                results['success'] += 1
+            except Exception as e:
+                results['failed'] += 1
+                results['errors'].append(f"ID {fid}: {e}")
+        self.progress.emit(total, total, "完成")
+        self.finished.emit(results)
+
+
 class ClassifyTab(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -512,11 +545,12 @@ class ClassifyTab(QWidget):
         reply = QMessageBox.question(
             self, "确认批量重命名",
             f"将对 {len(ids)} 个文件执行重命名\n格式: 日期_类型_原名\n确定继续?")
-        if reply == QMessageBox.StandardButton.Yes:
-            batch_id, results = self.file_manager.batch_rename(ids)
-            msg = f"批量重命名完成: 成功 {results['success']}, 失败 {results['failed']}"
-            notify(self, msg, 'success' if results['failed'] == 0 else 'warning', 4000)
-            self.refresh_data()
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._start_batch_operation(
+            operation_func=self.file_manager.rename_file,
+            file_ids=ids,
+            operation_name="批量重命名")
 
     def _batch_move(self):
         ids = self._get_selected_ids()
@@ -526,18 +560,39 @@ class ClassifyTab(QWidget):
         target = QFileDialog.getExistingDirectory(self, "选择目标目录")
         if not target:
             return
-        success = 0
-        failed = 0
-        for fid in ids:
-            try:
-                self.file_manager.move_file(fid, target)
-                success += 1
-            except Exception as e:
-                failed += 1
-                logger.warning(f"移动失败 ID={fid}: {e}")
-        QMessageBox.information(
-            self, "移动完成",
-            f"成功: {success}\n失败: {failed}")
+        self._start_batch_operation(
+            operation_func=self.file_manager.move_file,
+            file_ids=ids,
+            operation_name="批量移动",
+            extra_args={'target_dir': target})
+
+    def _start_batch_operation(self, operation_func, file_ids, operation_name, extra_args=None):
+        """启动后台批量操作，显示进度"""
+        self.reclassify_progress.setVisible(True)
+        self.reclassify_label.setVisible(True)
+        self.reclassify_progress.setValue(0)
+        self.reclassify_progress.setMaximum(len(file_ids))
+        self.reclassify_label.setText(f"{operation_name} 准备中...")
+
+        self._batch_worker = BatchOperationWorker(
+            operation_func=operation_func,
+            file_ids=file_ids,
+            extra_args=extra_args)
+        self._batch_worker.progress.connect(self._on_batch_progress)
+        self._batch_worker.finished.connect(
+            lambda results, name=operation_name: self._on_batch_finished(results, name))
+        self._batch_worker.start()
+
+    def _on_batch_progress(self, current, total, status):
+        self.reclassify_progress.setMaximum(total)
+        self.reclassify_progress.setValue(current)
+        self.reclassify_label.setText(status)
+
+    def _on_batch_finished(self, results, operation_name):
+        self.reclassify_progress.setVisible(False)
+        self.reclassify_label.setVisible(False)
+        msg = f"{operation_name}完成: 成功 {results['success']}, 失败 {results['failed']}"
+        notify(self, msg, 'success' if results['failed'] == 0 else 'warning', 4000)
         self.refresh_data()
 
     def _reclassify_all(self):

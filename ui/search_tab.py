@@ -25,9 +25,10 @@ class SearchTab(QWidget):
         super().__init__(parent)
         self.file_dao = FileDAO(db)
         self.file_manager = FileManager()
-        self.search_results = []
         self.page_size = 100
         self.current_page = 0
+        self.total_count = 0
+        self._search_params = {}  # 存储搜索条件，翻页时复用
         self._init_ui()
 
     def _init_ui(self):
@@ -171,50 +172,47 @@ class SearchTab(QWidget):
         self.end_date.setEnabled(checked)
 
     def _do_search(self):
-        name = self.name_input.text().strip() or None
-        file_type = self.type_combo.currentData()
+        self._search_params = {
+            'name': self.name_input.text().strip() or None,
+            'file_type': self.type_combo.currentData(),
+            'min_size': self.min_size.value() * 1024 if self.min_size.value() > 0 else None,
+            'max_size': self.max_size.value() * 1024 * 1024 if self.max_size.value() > 0 else None,
+            'start_date': self.start_date.date().toString("yyyy-MM-dd 00:00:00") if self.use_date_cb.isChecked() else None,
+            'end_date': self.end_date.date().toString("yyyy-MM-dd 23:59:59") if self.use_date_cb.isChecked() else None,
+            'is_duplicate': self.dup_combo.currentData(),
+        }
+        self.current_page = 0
+        self._load_page()
 
-        min_size = self.min_size.value() * 1024 if self.min_size.value() > 0 else None
-        max_size = self.max_size.value() * 1024 * 1024 if self.max_size.value() > 0 else None
-
-        start_date = None
-        end_date = None
-        if self.use_date_cb.isChecked():
-            start_date = self.start_date.date().toString("yyyy-MM-dd 00:00:00")
-            end_date = self.end_date.date().toString("yyyy-MM-dd 23:59:59")
-
-        is_dup = self.dup_combo.currentData()
-
+    def _load_page(self):
+        """服务端分页：每次只查询当前页数据"""
+        if not self._search_params:
+            return
         try:
-            results = self.file_dao.search(
-                name=name, file_type=file_type, min_size=min_size,
-                max_size=max_size, start_date=start_date, end_date=end_date,
-                is_duplicate=is_dup
-            )
-            self.search_results = results
-            self.current_page = 0
-            self._populate_results(results)
+            # 查总数（只在第一页时查询，缓存结果）
+            if self.current_page == 0 or self.total_count == 0:
+                self.total_count = self.file_dao.search_count(**self._search_params)
+
+            # 查当前页数据
+            page_files = self.file_dao.search_paginated(
+                page=self.current_page, page_size=self.page_size, **self._search_params)
+            self._populate_results(page_files)
         except Exception as e:
             logger.error(f"搜索失败: {e}")
             QMessageBox.critical(self, "搜索错误", str(e))
 
     def _populate_results(self, files):
-        self.search_results = files
-        total = len(files)
+        total = self.total_count
         total_pages = max(1, (total + self.page_size - 1) // self.page_size)
 
         # 修正当前页范围
         if self.current_page >= total_pages:
             self.current_page = total_pages - 1
 
-        start = self.current_page * self.page_size
-        end = min(start + self.page_size, total)
-        page_files = files[start:end]
-
-        self.result_table.setRowCount(len(page_files))
+        self.result_table.setRowCount(len(files))
         total_size = 0
 
-        for i, f in enumerate(page_files):
+        for i, f in enumerate(files):
             item = QTableWidgetItem(get_file_icon(f['file_type']) + f['file_name'])
             item.setData(Qt.ItemDataRole.UserRole, f['id'])
             self.result_table.setItem(i, 0, item)
@@ -242,11 +240,10 @@ class SearchTab(QWidget):
             is_dup = "是" if f.get('is_duplicate') else "否"
             self.result_table.setItem(i, 6, QTableWidgetItem(is_dup))
 
-        self.result_label.setText(f"找到 {len(files)} 个文件")
-        self.total_size_label.setText(f"总大小: {format_size(total_size)}")
+        self.result_label.setText(f"找到 {total} 个文件")
+        self.total_size_label.setText(f"当前页: {format_size(total_size)}")
 
         # 更新分页状态
-        total_pages = max(1, (len(self.search_results) + self.page_size - 1) // self.page_size)
         self.page_label.setText(f"第 {self.current_page + 1} 页 / 共 {total_pages} 页")
         self.prev_page_btn.setEnabled(self.current_page > 0)
         self.next_page_btn.setEnabled(self.current_page < total_pages - 1)
@@ -254,13 +251,13 @@ class SearchTab(QWidget):
     def _prev_page(self):
         if self.current_page > 0:
             self.current_page -= 1
-            self._populate_results(self.search_results)
+            self._load_page()
 
     def _next_page(self):
-        total_pages = max(1, (len(self.search_results) + self.page_size - 1) // self.page_size)
+        total_pages = max(1, (self.total_count + self.page_size - 1) // self.page_size)
         if self.current_page < total_pages - 1:
             self.current_page += 1
-            self._populate_results(self.search_results)
+            self._load_page()
 
     def _reset_search(self):
         self.name_input.clear()
@@ -270,6 +267,8 @@ class SearchTab(QWidget):
         self.dup_combo.setCurrentIndex(0)
         self.use_date_cb.setChecked(False)
         self.current_page = 0
+        self.total_count = 0
+        self._search_params = {}
         self.result_table.setRowCount(0)
         self.result_label.setText("请输入搜索条件")
         self.total_size_label.setText("")
