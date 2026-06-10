@@ -1,14 +1,14 @@
 """
-分类管理标签页 - 左侧分类树 + 右侧文件列表
+分类管理标签页 - 左侧分类树 + 右侧文件列表 + 文件预览面板
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget,
     QTreeWidgetItem, QTableWidget, QTableWidgetItem, QPushButton,
-    QLabel, QComboBox, QMessageBox, QHeaderView, QInputDialog, QFileDialog,
-    QMenu, QApplication, QProgressBar
+    QLabel, QMessageBox, QHeaderView, QInputDialog, QFileDialog,
+    QMenu, QApplication, QProgressBar, QFrame
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
-from PyQt6.QtGui import QColor, QBrush
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt6.QtGui import QColor, QBrush, QPixmap
 from PyQt6.QtGui import QAction
 
 import os
@@ -16,7 +16,7 @@ from config import FILE_TYPE_NAMES
 from core import FileClassifier, FileManager
 from core.batch_classifier import BatchClassifyWorker
 from database.db_manager import db
-from database.models import FileDAO, ClassificationDAO
+from database.models import FileDAO, ClassificationDAO, MetadataDAO
 from utils.display_utils import format_size, truncate_path, get_file_icon, get_file_color
 from utils.logger import logger
 from ui.toast import notify
@@ -60,11 +60,14 @@ class ClassifyTab(QWidget):
         super().__init__(parent)
         self.file_dao = FileDAO(db)
         self.cls_dao = ClassificationDAO(db)
+        self.meta_dao = MetadataDAO(db)
         self.classifier = FileClassifier()
         self.file_manager = FileManager()
-        self.current_files = []
         self.page_size = 100
         self.current_page = 0
+        self._total_count = 0
+        # 当前加载模式：'all' 或 ('classification', cls_type, cls_value)
+        self._mode = 'all'
         self._init_ui()
 
     def _init_ui(self):
@@ -88,7 +91,7 @@ class ClassifyTab(QWidget):
 
         layout.addLayout(top_layout)
 
-        # 分割器: 左树 + 右列表
+        # 分割器: 左树 + 中列表 + 右预览
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
         # 左侧分类树
@@ -107,9 +110,9 @@ class ClassifyTab(QWidget):
 
         splitter.addWidget(left_widget)
 
-        # 右侧文件列表
-        right_widget = QWidget()
-        right_layout = QVBoxLayout(right_widget)
+        # 中间文件列表
+        center_widget = QWidget()
+        right_layout = QVBoxLayout(center_widget)
         right_layout.setContentsMargins(0, 0, 0, 0)
 
         # 批量操作
@@ -134,8 +137,13 @@ class ClassifyTab(QWidget):
         self.file_table = QTableWidget()
         self.file_table.setColumnCount(6)
         self.file_table.setHorizontalHeaderLabels(["文件名", "路径", "类型", "大小", "修改时间", "分类"])
-        self.file_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.file_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
         self.file_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        self.file_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.file_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.file_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self.file_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.file_table.setColumnWidth(0, 180)
         self.file_table.setAlternatingRowColors(True)
         self.file_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.file_table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
@@ -174,14 +182,23 @@ class ClassifyTab(QWidget):
         self.reclassify_label.setVisible(False)
         right_layout.addWidget(self.reclassify_label)
 
-        splitter.addWidget(right_widget)
-        splitter.setSizes([200, 800])
+        splitter.addWidget(center_widget)
+
+        # 右侧预览面板（默认折叠隐藏）
+        self._preview_panel = self._build_preview_panel()
+        self._preview_panel.setVisible(False)
+        splitter.addWidget(self._preview_panel)
+        self._splitter = splitter
+
+        splitter.setSizes([180, 820, 0])
 
         layout.addWidget(splitter, 1)
 
     def refresh_data(self):
         self._build_tree()
-        self._load_all_files()
+        self._mode = 'all'
+        self.current_page = 0
+        self._reload_page()
 
     def _build_tree(self):
         self.tree.clear()
@@ -210,60 +227,60 @@ class ClassifyTab(QWidget):
         self.current_page = 0
         category, value = data
         if category == 'all':
-            self._load_all_files()
+            self._mode = 'all'
+            self._reload_page()
         else:
-            self._load_files_by_classification(category, value)
+            type_map = {'按类型': 'by_type', '按日期': 'by_date', '按关键词': 'by_keyword'}
+            db_type = type_map.get(category, category)
+            self._mode = ('classification', db_type, value)
+            self._reload_page()
 
-    def _load_all_files(self):
+    def _reload_page(self):
+        """根据当前模式从数据库加载当前页"""
         try:
-            files = self.file_dao.get_all_active()
+            if self._mode == 'all':
+                self._total_count = self.file_dao.count_active()
+                files = self.file_dao.get_all_active_paginated(
+                    page=self.current_page, page_size=self.page_size)
+            else:
+                _, cls_type, cls_value = self._mode
+                self._total_count = self.file_dao.count_by_classification(
+                    cls_type, cls_value)
+                files = self.file_dao.get_classification_paginated(
+                    cls_type, cls_value,
+                    page=self.current_page, page_size=self.page_size)
             self._populate_table(files)
         except Exception as e:
             logger.error(f"加载文件失败: {e}")
 
-    def _load_files_by_classification(self, cls_type, cls_value):
-        try:
-            type_map = {'按类型': 'by_type', '按日期': 'by_date', '按关键词': 'by_keyword'}
-            db_type = type_map.get(cls_type, cls_type)
-            sql = """SELECT f.* FROM files f
-                     JOIN file_classifications c ON f.id = c.file_id
-                     WHERE c.classification_type = %s AND c.classification_value = %s
-                     AND f.status = 'active'"""
-            files = db.execute_query(sql, (db_type, cls_value))
-            self._populate_table(files)
-        except Exception as e:
-            logger.error(f"加载分类文件失败: {e}")
-
     def _populate_table(self, files):
-        self.current_files = files
-        total = len(files)
+        total = self._total_count
         total_pages = max(1, (total + self.page_size - 1) // self.page_size)
 
         # 修正当前页范围
         if self.current_page >= total_pages:
             self.current_page = total_pages - 1
 
-        start = self.current_page * self.page_size
-        end = min(start + self.page_size, total)
-        page_files = files[start:end]
-
-        self.file_table.setRowCount(len(page_files))
+        self.file_table.setRowCount(len(files))
         self.file_count_label.setText(f"共 {total} 个文件")
 
         # 批量查询分类（避免 N+1）
-        page_ids = [f['id'] for f in page_files]
+        page_ids = [f['id'] for f in files]
         try:
             cls_map = self.cls_dao.get_by_file_ids(page_ids)
         except Exception:
             cls_map = {}
 
-        for i, f in enumerate(page_files):
+        for i, f in enumerate(files):
             item = QTableWidgetItem(get_file_icon(f['file_type']) + f['file_name'])
             item.setData(Qt.ItemDataRole.UserRole, f['id'])
+            item.setToolTip(f['file_name'])
             self.file_table.setItem(i, 0, item)
             path = f['file_path']
             display_path = truncate_path(path, 60)
-            self.file_table.setItem(i, 1, QTableWidgetItem(display_path))
+            path_item = QTableWidgetItem(display_path)
+            path_item.setToolTip(path)
+            self.file_table.setItem(i, 1, path_item)
 
             type_name = FILE_TYPE_NAMES.get(f['file_type'], f['file_type'])
             type_item = QTableWidgetItem(type_name)
@@ -282,7 +299,6 @@ class ClassifyTab(QWidget):
             self.file_table.setItem(i, 5, QTableWidgetItem(cls_text))
 
         # 更新分页状态
-        total_pages = max(1, (len(self.current_files) + self.page_size - 1) // self.page_size)
         self.page_label.setText(f"第 {self.current_page + 1} 页 / 共 {total_pages} 页")
         self.prev_page_btn.setEnabled(self.current_page > 0)
         self.next_page_btn.setEnabled(self.current_page < total_pages - 1)
@@ -290,17 +306,27 @@ class ClassifyTab(QWidget):
     def _prev_page(self):
         if self.current_page > 0:
             self.current_page -= 1
-            self._populate_table(self.current_files)
+            self._reload_page()
 
     def _next_page(self):
-        total_pages = max(1, (len(self.current_files) + self.page_size - 1) // self.page_size)
+        total_pages = max(1, (self._total_count + self.page_size - 1) // self.page_size)
         if self.current_page < total_pages - 1:
             self.current_page += 1
-            self._populate_table(self.current_files)
+            self._reload_page()
 
     def _on_selection_changed(self):
         count = len(self.file_table.selectionModel().selectedRows())
         self.selected_label.setText(f"已选 {count} 个文件" if count > 0 else "")
+        # 更新预览面板
+        if count == 1:
+            rows = self.file_table.selectionModel().selectedRows()
+            if rows:
+                item = self.file_table.item(rows[0].row(), 0)
+                if item:
+                    fid = item.data(Qt.ItemDataRole.UserRole)
+                    self._show_preview(fid)
+                    return
+        self._clear_preview()
 
     def _show_context_menu(self, pos):
         """文件列表右键菜单"""
@@ -549,3 +575,171 @@ class ClassifyTab(QWidget):
         self.reclassify_progress.setVisible(False)
         self.reclassify_label.setVisible(False)
         notify(self, f"分类失败: {msg}", 'error', 5000)
+
+    # ── 文件预览面板 ──
+
+    def _build_preview_panel(self) -> QWidget:
+        """构建右侧文件预览面板"""
+        panel = QFrame()
+        panel.setFixedWidth(230)
+        panel.setFrameShape(QFrame.Shape.StyledPanel)
+        panel.setStyleSheet(
+            "QFrame { background-color: #1e1e2e; border: 1px solid #313244; "
+            "border-radius: 6px; }")
+
+        self._preview_layout = QVBoxLayout(panel)
+        self._preview_layout.setContentsMargins(10, 10, 10, 10)
+        self._preview_layout.setSpacing(6)
+
+        # 标题
+        self._preview_title = QLabel("文件预览")
+        self._preview_title.setStyleSheet(
+            "font-weight: bold; color: #cba6f7; font-size: 12px; "
+            "border: none; background: transparent;")
+        self._preview_layout.addWidget(self._preview_title)
+
+        # 图片预览区域
+        self._preview_image = QLabel()
+        self._preview_image.setFixedSize(210, 140)
+        self._preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_image.setStyleSheet(
+            "background-color: #181825; border-radius: 4px; border: none;")
+        self._preview_image.setText("选择文件查看详情")
+        self._preview_image.setStyleSheet(
+            "color: #585b70; background-color: #181825; "
+            "border-radius: 4px; border: none;")
+        self._preview_layout.addWidget(self._preview_image)
+
+        # 文件信息区域
+        self._preview_info = QLabel()
+        self._preview_info.setWordWrap(True)
+        self._preview_info.setStyleSheet(
+            "color: #cdd6f4; font-size: 11px; border: none; background: transparent;")
+        self._preview_layout.addWidget(self._preview_info)
+
+        self._preview_layout.addStretch()
+
+        # 快捷操作按钮
+        btn_layout = QHBoxLayout()
+        self._preview_open_btn = QPushButton("打开")
+        self._preview_open_btn.setStyleSheet(
+            "QPushButton { background-color: #313244; color: #cdd6f4; "
+            "border: 1px solid #45475a; border-radius: 4px; "
+            "padding: 4px 8px; font-size: 11px; }"
+            "QPushButton:hover { background-color: #45475a; }")
+        self._preview_open_btn.setVisible(False)
+        btn_layout.addWidget(self._preview_open_btn)
+
+        self._preview_folder_btn = QPushButton("打开目录")
+        self._preview_folder_btn.setStyleSheet(
+            "QPushButton { background-color: #313244; color: #cdd6f4; "
+            "border: 1px solid #45475a; border-radius: 4px; "
+            "padding: 4px 8px; font-size: 11px; }"
+            "QPushButton:hover { background-color: #45475a; }")
+        self._preview_folder_btn.setVisible(False)
+        btn_layout.addWidget(self._preview_folder_btn)
+
+        btn_layout.addStretch()
+        self._preview_layout.addLayout(btn_layout)
+
+        return panel
+
+    def _show_preview(self, file_id: int):
+        """显示文件预览"""
+        record = self.file_dao.get_by_id(file_id)
+        if not record:
+            self._clear_preview()
+            return
+
+        # 展开预览面板
+        if not self._preview_panel.isVisible():
+            self._preview_panel.setVisible(True)
+            self._splitter.setSizes([180, 580, 230])
+
+        file_path = record.get('file_path', '')
+        file_name = record.get('file_name', '')
+        file_type = record.get('file_type', 'other')
+        file_size = record.get('file_size', 0)
+        mtime = record.get('modify_time', '')
+        ext = record.get('file_extension', '')
+
+        self._preview_title.setText(f"📝 {file_name[:20]}")
+        self._preview_title.setWordWrap(True)
+
+        # 基本信息
+        type_name = FILE_TYPE_NAMES.get(file_type, file_type)
+        info_lines = [
+            f"类型: {type_name} ({ext})",
+            f"大小: {format_size(file_size)}",
+            f"修改: {mtime or '-'}",
+            f"路径: {truncate_path(file_path, 40)}",
+        ]
+
+        # 尝试加载元数据
+        try:
+            meta = self.meta_dao.get_by_file_id(file_id)
+            if meta:
+                if meta.get('width') and meta.get('height'):
+                    info_lines.append(f"尺寸: {meta['width']}×{meta['height']}")
+                if meta.get('photo_taken_time'):
+                    info_lines.append(f"拍摄: {meta['photo_taken_time']}")
+                if meta.get('camera_model'):
+                    info_lines.append(f"相机: {meta['camera_model']}")
+                if meta.get('pdf_title'):
+                    info_lines.append(f"PDF标题: {meta['pdf_title'][:30]}")
+                if meta.get('pdf_pages'):
+                    info_lines.append(f"PDF页数: {meta['pdf_pages']}")
+        except Exception:
+            pass
+
+        self._preview_info.setText("\n".join(info_lines))
+
+        # 图片缩略图
+        if file_type == 'image' and os.path.exists(file_path):
+            try:
+                pixmap = QPixmap(file_path)
+                if not pixmap.isNull():
+                    scaled = pixmap.scaled(
+                        QSize(210, 140),
+                        Qt.AspectRatioMode.KeepAspectRatio,
+                        Qt.TransformationMode.SmoothTransformation)
+                    self._preview_image.setPixmap(scaled)
+                else:
+                    self._preview_image.setText("无法加载图片")
+            except Exception:
+                self._preview_image.setText("无法加载图片")
+        else:
+            icon = get_file_icon(file_type)
+            self._preview_image.setText(f"{icon}\n{type_name}")
+            self._preview_image.setStyleSheet(
+                "color: #a6adc8; background-color: #181825; "
+                "border-radius: 4px; border: none; font-size: 14px;")
+
+        # 快捷按钮
+        self._preview_open_btn.setVisible(True)
+        self._preview_folder_btn.setVisible(True)
+        try:
+            self._preview_open_btn.clicked.disconnect()
+            self._preview_folder_btn.clicked.disconnect()
+        except TypeError:
+            pass
+        self._preview_open_btn.clicked.connect(
+            lambda fp=file_path: self._safe_open_file(fp))
+        self._preview_folder_btn.clicked.connect(
+            lambda fp=file_path: self._safe_open_folder(fp))
+
+    def _clear_preview(self):
+        """清空并折叠预览面板"""
+        self._preview_title.setText("文件预览")
+        self._preview_image.clear()
+        self._preview_image.setText("选择文件查看详情")
+        self._preview_image.setStyleSheet(
+            "color: #585b70; background-color: #181825; "
+            "border-radius: 4px; border: none;")
+        self._preview_info.setText("")
+        self._preview_open_btn.setVisible(False)
+        self._preview_folder_btn.setVisible(False)
+        # 折叠面板
+        if self._preview_panel.isVisible():
+            self._preview_panel.setVisible(False)
+            self._splitter.setSizes([180, 820, 0])

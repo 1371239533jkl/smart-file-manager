@@ -18,6 +18,8 @@ from ui.classify_tab import ClassifyTab
 from ui.search_tab import SearchTab
 from ui.history_tab import HistoryTab
 from ui.recycle_bin_tab import RecycleBinTab
+from ui.dashboard_tab import DashboardTab
+from ui.duplicates_tab import DuplicatesTab
 from ui.settings_tab import SettingsTab
 from ui.tags_tab import TagsTab
 from ui.onboarding import OnboardingDialog
@@ -68,11 +70,13 @@ class MainWindow(QMainWindow):
 
         # 通知各页面主题变更
         if hasattr(self, 'scan_tab'):
+            self.theme_manager.apply_theme_to_widget(self.dashboard_tab, theme_name)
             self.theme_manager.apply_theme_to_widget(self.scan_tab, theme_name)
             self.theme_manager.apply_theme_to_widget(self.classify_tab, theme_name)
             self.theme_manager.apply_theme_to_widget(self.search_tab, theme_name)
             self.theme_manager.apply_theme_to_widget(self.history_tab, theme_name)
             self.theme_manager.apply_theme_to_widget(self.recycle_bin_tab, theme_name)
+            self.theme_manager.apply_theme_to_widget(self.duplicates_tab, theme_name)
             self.theme_manager.apply_theme_to_widget(self.tags_tab, theme_name)
             self.theme_manager.apply_theme_to_widget(self.settings_tab, theme_name)
 
@@ -129,11 +133,13 @@ class MainWindow(QMainWindow):
         self.nav_list.setSpacing(2)
 
         nav_items = [
+            ("  📊  仪表盘"),
             ("  📂  扫描管理"),
             ("  📁  分类管理"),
             ("  🔍  文件搜索"),
             ("  📋  操作历史"),
             ("  ♻️  回收区"),
+            ("  🔁  重复文件"),
             ("  🏷️  标签管理"),
             ("  ⚙️  系统设置"),
         ]
@@ -147,19 +153,23 @@ class MainWindow(QMainWindow):
         self.stack = QStackedWidget()
         self.stack.setObjectName("contentPanel")
 
+        self.dashboard_tab = DashboardTab(self)
         self.scan_tab = ScanTab(self)
         self.classify_tab = ClassifyTab(self)
         self.search_tab = SearchTab(self)
         self.history_tab = HistoryTab(self)
         self.recycle_bin_tab = RecycleBinTab(self)
+        self.duplicates_tab = DuplicatesTab(self)
         self.tags_tab = TagsTab(self)
         self.settings_tab = SettingsTab(self)
 
+        self.stack.addWidget(self.dashboard_tab)
         self.stack.addWidget(self.scan_tab)
         self.stack.addWidget(self.classify_tab)
         self.stack.addWidget(self.search_tab)
         self.stack.addWidget(self.history_tab)
         self.stack.addWidget(self.recycle_bin_tab)
+        self.stack.addWidget(self.duplicates_tab)
         self.stack.addWidget(self.tags_tab)
         self.stack.addWidget(self.settings_tab)
 
@@ -212,7 +222,7 @@ class MainWindow(QMainWindow):
                        hasattr(current, 'refresh_data')
             if has_undo:
                 idx = self.stack.currentIndex()
-                names = ["扫描管理", "分类管理", "文件搜索", "操作历史", "回收区", "标签管理", "系统设置"]
+                names = ["仪表盘", "扫描管理", "分类管理", "文件搜索", "操作历史", "回收区", "重复文件", "标签管理", "系统设置"]
                 self.show_toast(f"当前页面({names[idx]})不支持撤销", ToastType.INFO, 2000)
 
     def _on_nav_changed(self, index):

@@ -179,6 +179,122 @@ class FileDAO:
             "SELECT COUNT(*) as total FROM files WHERE status = 'deleted'")
         return row['total'] if row else 0
 
+    def count_active(self) -> int:
+        """活跃文件总数"""
+        row = self.db.execute_one(
+            "SELECT COUNT(*) as total FROM files WHERE status = 'active'")
+        return row['total'] if row else 0
+
+    def get_classification_paginated(self, cls_type: str, cls_value: str,
+                                     page: int = 0, page_size: int = 100) -> list:
+        """分页获取分类文件"""
+        offset = page * page_size
+        sql = """SELECT f.* FROM files f
+                 JOIN file_classifications c ON f.id = c.file_id
+                 WHERE c.classification_type = %s AND c.classification_value = %s
+                 AND f.status = 'active'
+                 ORDER BY f.scan_time DESC LIMIT %s OFFSET %s"""
+        return self.db.execute_query(sql, (cls_type, cls_value, page_size, offset))
+
+    def count_by_classification(self, cls_type: str, cls_value: str) -> int:
+        """分类下文件总数"""
+        sql = """SELECT COUNT(*) as total FROM files f
+                 JOIN file_classifications c ON f.id = c.file_id
+                 WHERE c.classification_type = %s AND c.classification_value = %s
+                 AND f.status = 'active'"""
+        row = self.db.execute_one(sql, (cls_type, cls_value))
+        return row['total'] if row else 0
+
+    # ── 磁盘分析 DAO ──
+
+    def get_total_size(self) -> int:
+        """所有活跃文件总大小"""
+        row = self.db.execute_one(
+            "SELECT COALESCE(SUM(file_size), 0) as total FROM files WHERE status = 'active'")
+        return row['total'] if row else 0
+
+    def get_size_distribution(self) -> list:
+        """文件大小分布：返回 [range_label, count]"""
+        sql = """SELECT
+            CASE
+                WHEN file_size < 1024 THEN '0-1KB'
+                WHEN file_size < 1048576 THEN '1KB-1MB'
+                WHEN file_size < 104857600 THEN '1MB-100MB'
+                WHEN file_size < 1073741824 THEN '100MB-1GB'
+                ELSE '>1GB'
+            END as size_range,
+            COUNT(*) as count
+            FROM files WHERE status = 'active'
+            GROUP BY size_range
+            ORDER BY FIELD(size_range, '0-1KB', '1KB-1MB', '1MB-100MB', '100MB-1GB', '>1GB')"""
+        return self.db.execute_query(sql)
+
+    def get_top_directories(self, limit: int = 10) -> list:
+        """按目录统计文件总大小（取 Top N）"""
+        sql = """SELECT
+            SUBSTRING_INDEX(file_path, '/', 4) as dir_path,
+            COUNT(*) as file_count,
+            SUM(file_size) as total_size
+            FROM files WHERE status = 'active'
+            GROUP BY dir_path
+            ORDER BY total_size DESC LIMIT %s"""
+        return self.db.execute_query(sql, (limit,))
+
+    def get_monthly_trend(self) -> list:
+        """按月统计扫描文件数和总大小"""
+        sql = """SELECT
+            DATE_FORMAT(scan_time, '%Y-%m') as month,
+            COUNT(*) as count,
+            SUM(file_size) as total_size
+            FROM files WHERE status = 'active'
+            GROUP BY month ORDER BY month DESC LIMIT 12"""
+        return self.db.execute_query(sql)
+
+    # ── 重复文件 DAO ──
+
+    def count_duplicate_groups(self) -> int:
+        """重复组数"""
+        row = self.db.execute_one(
+            """SELECT COUNT(*) as total FROM (
+                SELECT file_hash FROM files
+                WHERE file_hash IS NOT NULL AND status = 'active'
+                GROUP BY file_hash HAVING COUNT(*) > 1
+            ) t""")
+        return row['total'] if row else 0
+
+    def get_duplicate_groups_paginated(self, page: int = 0, page_size: int = 50) -> list:
+        """分页获取重复组摘要（hash、数量、单文件大小、浪费空间）"""
+        offset = page * page_size
+        sql = """SELECT file_hash,
+            COUNT(*) as file_count,
+            MIN(file_size) as single_size,
+            (COUNT(*) - 1) * MIN(file_size) as wasted_size
+            FROM files
+            WHERE file_hash IS NOT NULL AND status = 'active'
+            GROUP BY file_hash HAVING file_count > 1
+            ORDER BY wasted_size DESC
+            LIMIT %s OFFSET %s"""
+        return self.db.execute_query(sql, (page_size, offset))
+
+    def get_duplicate_group_files(self, file_hash: str) -> list:
+        """获取指定哈希值的所有文件"""
+        return self.db.execute_query(
+            """SELECT * FROM files
+               WHERE file_hash = %s AND status = 'active'
+               ORDER BY modify_time DESC""",
+            (file_hash,))
+
+    def get_duplicate_total_wasted(self) -> int:
+        """重复文件总浪费空间"""
+        row = self.db.execute_one(
+            """SELECT COALESCE(SUM(wasted), 0) as total FROM (
+                SELECT (COUNT(*) - 1) * MIN(file_size) as wasted
+                FROM files
+                WHERE file_hash IS NOT NULL AND status = 'active'
+                GROUP BY file_hash HAVING COUNT(*) > 1
+            ) t""")
+        return row['total'] if row else 0
+
     def delete_by_path(self, file_path: str) -> int:
         return self.db.execute_update(
             "UPDATE files SET status = 'deleted' WHERE file_path = %s", (file_path,))
