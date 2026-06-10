@@ -4,10 +4,12 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QPushButton, QLabel,
     QTableWidget, QTableWidgetItem, QComboBox, QMessageBox,
-    QHeaderView, QDateEdit
+    QHeaderView, QDateEdit, QFileDialog
 )
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QColor, QBrush
+
+import csv
 
 from core import OperationHistoryManager
 from utils.logger import logger
@@ -115,6 +117,10 @@ class HistoryTab(QWidget):
         undo_batch_btn = QPushButton("撤销选中批次")
         undo_batch_btn.clicked.connect(self._undo_batch)
         bottom_layout.addWidget(undo_batch_btn)
+
+        export_btn = QPushButton("导出 CSV")
+        export_btn.clicked.connect(self._export_csv)
+        bottom_layout.addWidget(export_btn)
 
         bottom_layout.addStretch()
 
@@ -258,3 +264,29 @@ class HistoryTab(QWidget):
 
         QMessageBox.information(self, "批量撤销", f"成功撤销 {total_success} 条操作")
         self.refresh_data()
+
+    def _export_csv(self):
+        """导出当前筛选的操作历史为 CSV 文件"""
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出操作历史", "operation_history.csv",
+            "CSV 文件 (*.csv)")
+        if not path:
+            return
+        try:
+            op_type = self.type_combo.currentData()
+            start = self.start_date.date().toString("yyyy-MM-dd 00:00:00")
+            end = self.end_date.date().toString("yyyy-MM-dd 23:59:59")
+            records = self.history_mgr.search_operations(
+                op_type=op_type, start_date=start, end_date=end)
+
+            with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=[
+                    'id', 'operation_time', 'operation_type', 'file_id',
+                    'old_value', 'new_value', 'operation_status', 'batch_id'])
+                writer.writeheader()
+                for r in records:
+                    writer.writerow({k: r.get(k, '') for k in writer.fieldnames})
+
+            QMessageBox.information(self, "导出成功", f"已导出 {len(records)} 条记录到:\n{path}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))

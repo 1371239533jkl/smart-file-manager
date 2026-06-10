@@ -7,7 +7,7 @@ from PyQt6.QtWidgets import (
     QMessageBox, QSplitter, QStatusBar
 )
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont, QShortcut, QKeySequence
+from PyQt6.QtGui import QShortcut, QKeySequence
 
 from config import APP_NAME, APP_VERSION, WINDOW_WIDTH, WINDOW_HEIGHT, MIN_WINDOW_WIDTH, MIN_WINDOW_HEIGHT
 from ui.styles import DARK_STYLE, LIGHT_STYLE
@@ -19,7 +19,10 @@ from ui.search_tab import SearchTab
 from ui.history_tab import HistoryTab
 from ui.settings_tab import SettingsTab
 from ui.tags_tab import TagsTab
+from ui.onboarding import OnboardingDialog
 from database.db_manager import db
+from database.models import SystemSettingsDAO
+from utils.display_utils import get_platform_font
 from utils.logger import logger
 
 
@@ -35,6 +38,7 @@ class MainWindow(QMainWindow):
         self._init_theme_manager()
         self._init_ui()
         self._apply_theme(self._current_theme)
+        self._show_onboarding_if_needed()
 
     def _init_database(self):
         try:
@@ -91,7 +95,7 @@ class MainWindow(QMainWindow):
 
         title = QLabel(APP_NAME)
         title.setObjectName("titleLabel")
-        title.setFont(QFont("Microsoft YaHei", 16, QFont.Weight.Bold))
+        title.setFont(get_platform_font(16))
         header_layout.addWidget(title)
 
         header_layout.addStretch()
@@ -217,3 +221,15 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         db.close()
         event.accept()
+
+    def _show_onboarding_if_needed(self):
+        """首次启动时显示引导对话框"""
+        try:
+            settings_dao = SystemSettingsDAO(db)
+            if not settings_dao.get('onboarding_done', False):
+                dialog = OnboardingDialog(self)
+                dialog.exec()
+                settings_dao.set('onboarding_done', '1', 'bool', '引导已完成')
+                logger.info("首次启动引导已显示")
+        except Exception as e:
+            logger.debug(f"引导对话框异常: {e}")

@@ -1,7 +1,13 @@
 """
 显示工具函数 - UI 中重复的格式化逻辑统一抽取
 """
-from typing import Union
+from __future__ import annotations
+
+import sys
+from typing import Union, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PyQt6.QtGui import QFont
 
 # 文件类型 → Emoji 图标映射
 FILE_TYPE_ICONS = {
@@ -59,3 +65,19 @@ def truncate_path(file_path: str, max_len: int = 60) -> str:
     if len(file_path) < max_len:
         return file_path
     return "..." + file_path[-(max_len - 3):]
+
+
+# 各平台优选中文字体列表（按优先级排序）
+_PLATFORM_FONTS = {
+    'win32': ['Microsoft YaHei', 'SimHei', 'Segoe UI'],
+    'darwin': ['PingFang SC', 'Hiragino Sans GB', 'STHeiti'],
+    'linux': ['Noto Sans CJK SC', 'WenQuanYi Micro Hei', 'Droid Sans Fallback'],
+}
+
+
+def get_platform_font(size: int = 10) -> QFont:
+    """返回当前平台最佳可用的中文字体"""
+    from PyQt6.QtGui import QFont
+    font_families = _PLATFORM_FONTS.get(sys.platform, _PLATFORM_FONTS['linux'])
+    font = QFont(font_families, size)
+    return font

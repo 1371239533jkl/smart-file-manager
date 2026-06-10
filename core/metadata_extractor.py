@@ -83,14 +83,63 @@ def extract_pdf_metadata(file_path: str) -> dict:
 
 
 def extract_video_metadata(file_path: str) -> dict:
-    """提取视频基本信息（文件大小等，不依赖外部库）"""
+    """提取视频基本信息（时长、分辨率、文件大小）
+    优先使用 ffprobe（ffmpeg 套件），不可用时回退到仅文件大小。
+    """
+    import subprocess
+
     metadata = {}
-    # 简单的基于文件大小估算，不引入重量级视频处理库
+    size = 0
     try:
         size = os.path.getsize(file_path)
-        metadata['extra_data'] = json.dumps({'file_size_bytes': size})
+    except Exception:
+        pass
+
+    # 尝试用 ffprobe 提取详细元数据
+    try:
+        result = subprocess.run(
+            [
+                'ffprobe', '-v', 'quiet',
+                '-print_format', 'json',
+                '-show_format', '-show_streams',
+                file_path,
+            ],
+            capture_output=True, text=True, timeout=15)
+
+        if result.returncode == 0 and result.stdout:
+            info = json.loads(result.stdout)
+
+            # 时长
+            fmt = info.get('format', {})
+            duration = fmt.get('duration')
+            if duration:
+                try:
+                    metadata['video_duration'] = int(float(duration))
+                except (ValueError, TypeError):
+                    pass
+
+            # 分辨率（取第一个视频流）
+            for stream in info.get('streams', []):
+                if stream.get('codec_type') == 'video':
+                    w = stream.get('width')
+                    h = stream.get('height')
+                    if w and h:
+                        metadata['video_resolution'] = f"{w}x{h}"
+                    break
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        # ffprobe 不可用，静默回退
+        pass
     except Exception as e:
-        logger.debug(f"提取视频元数据失败: {file_path} - {e}")
+        logger.debug(f"ffprobe 提取视频元数据失败: {file_path} - {e}")
+
+    # 始终记录文件大小
+    extra = {'file_size_bytes': size}
+    if 'video_duration' in metadata:
+        extra['duration_seconds'] = metadata['video_duration']
+    if 'video_resolution' in metadata:
+        extra['resolution'] = metadata['video_resolution']
+    metadata['extra_data'] = json.dumps(extra)
+
     return metadata
 
 

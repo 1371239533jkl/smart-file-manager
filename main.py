@@ -10,11 +10,11 @@ sys.path.insert(0, PROJECT_DIR)
 
 from PyQt6.QtWidgets import QApplication
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QFont
 
 from ui.main_window import MainWindow
 from utils.logger import logger
 from config import MYSQL_CONFIG
+from utils.display_utils import get_platform_font
 
 _WEAK_PASSWORDS = {'123456', 'password', 'root', 'admin', '', 'CHANGE_ME_YOUR_MYSQL_PASSWORD'}
 
@@ -47,9 +47,8 @@ def main():
     app = QApplication(sys.argv)
     app.setStyle("Fusion")
 
-    # 设置全局字体
-    font = QFont("Microsoft YaHei", 10)
-    app.setFont(font)
+    # 设置全局字体（跨平台兼容）
+    app.setFont(get_platform_font(10))
 
     window = MainWindow()
     window.show()

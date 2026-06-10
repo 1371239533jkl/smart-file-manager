@@ -5,12 +5,13 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QFormLayout, QPushButton,
     QLabel, QLineEdit, QComboBox, QTableWidget, QTableWidgetItem,
     QSpinBox, QDateEdit, QGroupBox, QHeaderView, QMessageBox,
-    QCheckBox, QMenu, QApplication, QInputDialog
+    QCheckBox, QMenu, QApplication, QInputDialog, QFileDialog
 )
 from PyQt6.QtCore import Qt, QDate
 from PyQt6.QtGui import QAction, QColor, QBrush
 
 import os
+import csv
 from config import FILE_TYPE_NAMES
 from core import FileManager
 from database.db_manager import db
@@ -131,6 +132,12 @@ class SearchTab(QWidget):
         self.total_size_label = QLabel("")
         self.total_size_label.setObjectName("subtitleLabel")
         stats_layout.addWidget(self.total_size_label)
+
+        self.export_btn = QPushButton("导出 CSV")
+        self.export_btn.clicked.connect(self._export_csv)
+        self.export_btn.setVisible(False)
+        stats_layout.addWidget(self.export_btn)
+
         layout.addLayout(stats_layout)
 
         # 结果表格
@@ -247,6 +254,7 @@ class SearchTab(QWidget):
         self.page_label.setText(f"第 {self.current_page + 1} 页 / 共 {total_pages} 页")
         self.prev_page_btn.setEnabled(self.current_page > 0)
         self.next_page_btn.setEnabled(self.current_page < total_pages - 1)
+        self.export_btn.setVisible(total > 0)
 
     def _prev_page(self):
         if self.current_page > 0:
@@ -275,6 +283,7 @@ class SearchTab(QWidget):
         self.page_label.setText("第 0 页 / 共 0 页")
         self.prev_page_btn.setEnabled(False)
         self.next_page_btn.setEnabled(False)
+        self.export_btn.setVisible(False)
 
     def _show_context_menu(self, pos):
         """搜索列表右键菜单"""
@@ -422,3 +431,26 @@ class SearchTab(QWidget):
 
     def refresh_data(self):
         pass
+
+    def _export_csv(self):
+        """导出当前搜索结果（全量）为 CSV 文件"""
+        if not self._search_params:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出搜索结果", "search_results.csv",
+            "CSV 文件 (*.csv)")
+        if not path:
+            return
+        try:
+            # 导出全部结果，不分页
+            all_files = self.file_dao.search(**self._search_params)
+            with open(path, 'w', newline='', encoding='utf-8-sig') as f:
+                writer = csv.DictWriter(f, fieldnames=[
+                    'file_name', 'file_path', 'file_type', 'file_size',
+                    'modify_time', 'file_hash', 'is_duplicate'])
+                writer.writeheader()
+                for r in all_files:
+                    writer.writerow({k: r.get(k, '') for k in writer.fieldnames})
+            notify(self, f"已导出 {len(all_files)} 条记录", 'success', 3000)
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", str(e))
