@@ -322,12 +322,25 @@ class ClassifyTab(QWidget):
         all_item = QTreeWidgetItem(self.tree, ["全部文件"])
         all_item.setData(0, Qt.ItemDataRole.UserRole, ('all', None))
 
+        # 按维度分组：按类型、按日期、按关键词
+        dimension_names = {'by_type': '按类型', 'by_date': '按日期', 'by_keyword': '按关键词'}
+        
         for category, items in tree_data.items():
+            # 创建维度父节点（如"按类型"、"按日期"）
             parent = QTreeWidgetItem(self.tree, [category])
             parent.setExpanded(True)
+            
+            # 去重：同一个分类值只显示一次
+            seen_values = set()
             for value, count in items:
+                if value in seen_values:
+                    continue
+                seen_values.add(value)
+                
                 child = QTreeWidgetItem(parent, [f"{value} ({count})"])
-                child.setData(0, Qt.ItemDataRole.UserRole, (category, value))
+                # 存储分类类型和值
+                db_type = {'按类型': 'by_type', '按日期': 'by_date', '按关键词': 'by_keyword'}.get(category, category)
+                child.setData(0, Qt.ItemDataRole.UserRole, (db_type, value))
 
         self.tree.expandAll()
 
@@ -342,9 +355,8 @@ class ClassifyTab(QWidget):
         if category == 'all':
             new_mode = 'all'
         else:
-            type_map = {'按类型': 'by_type', '按日期': 'by_date', '按关键词': 'by_keyword'}
-            db_type = type_map.get(category, category)
-            new_mode = ('classification', db_type, value)
+            # category 已经是 db_type（by_type, by_date, by_keyword）
+            new_mode = ('classification', category, value)
         
         # 如果点击的是当前已选中的分类，不重复加载
         if new_mode == self._mode and self.current_page == 0:
@@ -543,21 +555,32 @@ class ClassifyTab(QWidget):
         if not record:
             return
 
+        # 标准化路径（关键修复）
+        file_path = record.get('file_path', '')
+        # 确保 file_path 是字符串类型
+        if not isinstance(file_path, str) or not file_path:
+            logger.warning(f"文件路径无效: {file_path} (type: {type(file_path).__name__})")
+            file_path = ''
+        else:
+            file_path = os.path.normpath(file_path)
+        
+        logger.debug(f"右键菜单 - 文件路径: {file_path}")
+
         menu = QMenu(self)
         open_action = QAction("打开文件", self)
-        open_action.triggered.connect(lambda fp=record['file_path']: self._safe_open_file(fp))
+        open_action.triggered.connect(lambda fp=file_path: self._safe_open_file(fp))
         menu.addAction(open_action)
 
         open_folder_action = QAction("打开所在文件夹", self)
         open_folder_action.triggered.connect(
-            lambda fp=record['file_path']: self._safe_open_folder(fp))
+            lambda fp=file_path: self._safe_open_folder(fp))
         menu.addAction(open_folder_action)
 
         menu.addSeparator()
 
         copy_path_action = QAction("复制路径", self)
         copy_path_action.triggered.connect(
-            lambda: QApplication.clipboard().setText(record['file_path']))
+            lambda: QApplication.clipboard().setText(file_path))
         menu.addAction(copy_path_action)
 
         copy_name_action = QAction("复制文件名", self)
@@ -587,32 +610,56 @@ class ClassifyTab(QWidget):
 
     def _safe_open_file(self, file_path: str):
         """安全打开文件，文件不存在时给出友好提示"""
-        if not file_path or not isinstance(file_path, str):
+        logger.debug(f"尝试打开文件: {file_path}")
+        
+        # 确保 file_path 是字符串类型
+        if not isinstance(file_path, str) or not file_path:
             notify(self, "无法操作：文件路径无效", 'warning', 4000)
+            logger.warning(f"文件路径无效: {file_path} (type: {type(file_path).__name__})")
             return
+        
+        # 标准化路径
+        file_path = os.path.normpath(file_path)
+        logger.debug(f"标准化后路径: {file_path}")
+        
         if not os.path.exists(file_path):
             notify(self, f"文件不存在: {os.path.basename(file_path)}", 'warning', 4000)
             logger.warning(f"尝试打开不存在的文件: {file_path}")
             return
+        
         try:
             os.startfile(file_path)
+            logger.info(f"成功打开文件: {file_path}")
         except Exception as e:
             notify(self, f"无法打开文件: {e}", 'error', 5000)
             logger.error(f"打开文件失败: {file_path}, 错误: {e}")
 
     def _safe_open_folder(self, file_path: str):
         """安全打开所在文件夹"""
-        if not file_path or not isinstance(file_path, str):
+        logger.debug(f"尝试打开文件夹: {file_path}")
+        
+        # 确保 file_path 是字符串类型
+        if not isinstance(file_path, str) or not file_path:
             notify(self, "无法操作：文件路径无效", 'warning', 4000)
+            logger.warning(f"文件路径无效: {file_path} (type: {type(file_path).__name__})")
             return
+        
+        # 标准化路径
+        file_path = os.path.normpath(file_path)
         folder = os.path.dirname(file_path)
+        logger.debug(f"文件夹路径: {folder}")
+        
         if not folder or not os.path.exists(folder):
             notify(self, "文件所在目录已不存在", 'warning', 4000)
+            logger.warning(f"文件夹不存在: {folder}")
             return
+        
         try:
             os.startfile(folder)
+            logger.info(f"成功打开文件夹: {folder}")
         except Exception as e:
             notify(self, f"无法打开文件夹: {e}", 'error', 5000)
+            logger.error(f"打开文件夹失败: {folder}, 错误: {e}")
 
     def _context_rename(self, file_id):
         """右键菜单：重命名单个文件（需二次确认）"""

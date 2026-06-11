@@ -377,8 +377,9 @@ class ClassificationDAO:
         if not file_ids:
             return {}
         placeholders = ','.join(['%s'] * len(file_ids))
+        # 使用 DISTINCT 去重，避免同一个分类值重复显示
         rows = self.db.execute_query(
-            f"SELECT file_id, classification_value FROM file_classifications "
+            f"SELECT DISTINCT file_id, classification_value FROM file_classifications "
             f"WHERE file_id IN ({placeholders}) ORDER BY classification_value",
             tuple(file_ids))
         result: dict = {}

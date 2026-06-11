@@ -63,6 +63,7 @@ CREATE TABLE IF NOT EXISTS file_classifications (
     classification_value VARCHAR(255) NOT NULL      COMMENT '分类值',
     classification_time DATETIME    NOT NULL        COMMENT '分类时间',
     confidence_score    DECIMAL(3,2) DEFAULT 1.00   COMMENT '置信度 0.00-1.00',
+    UNIQUE INDEX idx_file_cls_unique (file_id, classification_type, classification_value),
     INDEX idx_file_class (file_id, classification_type),
     CONSTRAINT fk_class_file FOREIGN KEY (file_id) REFERENCES files(id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文件分类记录表';

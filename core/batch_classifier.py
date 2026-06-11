@@ -102,9 +102,11 @@ class BatchClassifyWorker(QThread):
 
     @staticmethod
     def _flush_batch(conn, batch: list) -> None:
+        """批量插入分类，使用 INSERT IGNORE 避免重复"""
         with conn.cursor() as cur:
+            # 使用 INSERT IGNORE 避免重复插入相同的分类
             cur.executemany(
-                "INSERT INTO file_classifications "
+                "INSERT IGNORE INTO file_classifications "
                 "(file_id, classification_type, classification_value, "
                 "classification_time, confidence_score) "
                 "VALUES (%s, %s, %s, %s, %s)", batch)
