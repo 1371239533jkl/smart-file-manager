@@ -12,10 +12,21 @@ class FileDAO:
         self.db = db
 
     def insert(self, file_info: dict) -> int:
+        """插入或更新文件记录。如果 file_path 已存在，则更新并重新激活为 active。"""
         sql = """INSERT INTO files
             (file_path, file_name, original_name, file_extension, file_type,
              file_size, file_hash, create_time, modify_time, scan_time, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+            file_name=VALUES(file_name),
+            original_name=VALUES(original_name),
+            file_extension=VALUES(file_extension),
+            file_type=VALUES(file_type),
+            file_size=VALUES(file_size),
+            file_hash=COALESCE(VALUES(file_hash), file_hash),
+            modify_time=VALUES(modify_time),
+            scan_time=VALUES(scan_time),
+            status='active'"""
         return self.db.execute_insert(sql, (
             file_info['file_path'], file_info['file_name'],
             file_info.get('original_name'), file_info['file_extension'],
@@ -25,10 +36,21 @@ class FileDAO:
         ))
 
     def insert_many(self, file_infos: list) -> int:
+        """批量插入或更新。如果 file_path 已存在，则更新并重新激活为 active。"""
         sql = """INSERT INTO files
             (file_path, file_name, original_name, file_extension, file_type,
              file_size, file_hash, create_time, modify_time, scan_time, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"""
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+            file_name=VALUES(file_name),
+            original_name=VALUES(original_name),
+            file_extension=VALUES(file_extension),
+            file_type=VALUES(file_type),
+            file_size=VALUES(file_size),
+            file_hash=COALESCE(VALUES(file_hash), file_hash),
+            modify_time=VALUES(modify_time),
+            scan_time=VALUES(scan_time),
+            status='active'"""
         params = [(
             fi['file_path'], fi['file_name'], fi.get('original_name'),
             fi['file_extension'], fi['file_type'], fi['file_size'],

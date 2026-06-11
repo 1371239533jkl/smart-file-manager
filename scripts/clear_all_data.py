@@ -50,22 +50,45 @@ def clear_all_data(confirm: bool = False):
         
         logger.info(f"当前数据量: {file_count} 个文件, {dir_count} 个扫描目录")
         
-        # 2. 清空数据（按外键依赖顺序）
-        tables = [
-            'file_tags',              # 文件标签
-            'file_classifications',   # 文件分类
-            'file_metadata',          # 文件元数据
-            'operation_history',      # 操作历史
-            'files',                  # 文件记录
-            'scan_directories',       # 扫描目录配置
-        ]
-        
-        for table in tables:
+        # 2. 清空数据（先禁用外键检查，避免外键约束错误）
+        try:
+            # 禁用外键检查
+            db.execute_update("SET FOREIGN_KEY_CHECKS = 0")
+            logger.info("已禁用外键检查")
+            
+            tables = [
+                'file_tags',              # 文件标签
+                'file_classifications',   # 文件分类
+                'file_metadata',          # 文件元数据
+                'operation_history',      # 操作历史
+                'files',                  # 文件记录
+                'scan_directories',       # 扫描目录配置
+            ]
+            
+            for table in tables:
+                try:
+                    db.execute_update(f"TRUNCATE TABLE {table}")
+                    logger.info(f"✅ 已清空 {table}")
+                except Exception as e:
+                    logger.warning(f"⚠️  清空 {table} 失败: {e}")
+                    # 如果 TRUNCATE 失败，尝试 DELETE
+                    try:
+                        db.execute_update(f"DELETE FROM {table}")
+                        logger.info(f"✅ 已通过 DELETE 清空 {table}")
+                    except Exception as e2:
+                        logger.error(f"❌ DELETE 清空 {table} 也失败: {e2}")
+            
+            # 恢复外键检查
+            db.execute_update("SET FOREIGN_KEY_CHECKS = 1")
+            logger.info("已恢复外键检查")
+            
+        except Exception as e:
+            # 确保恢复外键检查
             try:
-                db.execute_update(f"TRUNCATE TABLE {table}")
-                logger.info(f"✅ 已清空 {table}")
-            except Exception as e:
-                logger.warning(f"⚠️  清空 {table} 失败: {e}")
+                db.execute_update("SET FOREIGN_KEY_CHECKS = 1")
+            except:
+                pass
+            raise
         
         # 3. 验证结果
         remaining_files = db.execute_one("SELECT COUNT(*) as count FROM files")['count']

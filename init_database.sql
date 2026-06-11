@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS files (
     is_duplicate    TINYINT         DEFAULT 0       COMMENT '是否重复文件 0否 1是',
     duplicate_group_id BIGINT       NULL            COMMENT '重复文件组ID',
     status          VARCHAR(20)     DEFAULT 'active' COMMENT '状态 active/deleted/moved',
-    INDEX idx_file_path (file_path),
+    UNIQUE INDEX idx_file_path (file_path),
     INDEX idx_file_name (file_name),
     INDEX idx_file_extension (file_extension),
     INDEX idx_file_type (file_type),
