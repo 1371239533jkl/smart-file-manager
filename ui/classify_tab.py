@@ -69,6 +69,8 @@ class ClassifyTab(QWidget):
         self._total_count = 0
         # 当前加载模式：'all' 或 ('classification', cls_type, cls_value)
         self._mode = 'all'
+        # 当前预览文件的路径
+        self._current_preview_path = None
         self._init_ui()
 
     def _init_ui(self):
@@ -761,18 +763,21 @@ class ClassifyTab(QWidget):
         # 快捷按钮
         self._preview_open_btn.setVisible(True)
         self._preview_folder_btn.setVisible(True)
+        
+        # 保存当前文件路径到实例变量，供按钮点击时使用
+        self._current_preview_path = file_path
+        
         try:
             self._preview_open_btn.clicked.disconnect()
             self._preview_folder_btn.clicked.disconnect()
         except TypeError:
             pass
-        self._preview_open_btn.clicked.connect(
-            lambda fp=file_path: self._safe_open_file(fp))
-        self._preview_folder_btn.clicked.connect(
-            lambda fp=file_path: self._safe_open_folder(fp))
+        self._preview_open_btn.clicked.connect(self._on_open_file_clicked)
+        self._preview_folder_btn.clicked.connect(self._on_open_folder_clicked)
 
     def _clear_preview(self):
         """清空并折叠预览面板"""
+        self._current_preview_path = None  # 清除路径
         self._preview_title.setText("文件预览")
         self._preview_image.clear()
         self._preview_image.setText("选择文件查看详情")
@@ -786,3 +791,13 @@ class ClassifyTab(QWidget):
         if self._preview_panel.isVisible():
             self._preview_panel.setVisible(False)
             self._splitter.setSizes([180, 820, 0])
+
+    def _on_open_file_clicked(self):
+        """打开文件按钮点击"""
+        if hasattr(self, '_current_preview_path') and self._current_preview_path:
+            self._safe_open_file(self._current_preview_path)
+
+    def _on_open_folder_clicked(self):
+        """打开文件夹按钮点击"""
+        if hasattr(self, '_current_preview_path') and self._current_preview_path:
+            self._safe_open_folder(self._current_preview_path)
