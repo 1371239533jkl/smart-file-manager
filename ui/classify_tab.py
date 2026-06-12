@@ -3,11 +3,11 @@
 """
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget,
-    QTreeWidgetItem, QTableWidget, QTableWidgetItem, QPushButton,
+    QTreeWidgetItem, QTableView, QAbstractItemView, QPushButton,
     QLabel, QMessageBox, QHeaderView, QInputDialog, QFileDialog,
     QMenu, QApplication, QProgressBar, QFrame
 )
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QAbstractTableModel, QModelIndex
 from PyQt6.QtGui import QColor, QBrush, QPixmap
 from PyQt6.QtGui import QAction
 
@@ -58,7 +58,7 @@ class BatchOperationWorker(QThread):
 
 
 class DataLoadWorker(QThread):
-    """后台数据加载工作线程"""
+    """后台数据加载工作线程（在非 UI 线程中进行格式化计算）"""
     data_loaded = pyqtSignal(list, int)  # files, total_count
     load_error = pyqtSignal(str)
     
@@ -82,9 +82,113 @@ class DataLoadWorker(QThread):
                 files = self.file_dao.get_classification_paginated(
                     cls_type, cls_value,
                     page=self.current_page, page_size=self.page_size)
+            
+            # ── 性能优化：在后台线程预计算所有显示字符串，释放 UI 线程 ──
+            for f in files:
+                # 文件名（带图标）
+                f['_display_name'] = get_file_icon(f['file_type']) + f['file_name']
+                # 路径（截断）
+                f['_display_path'] = truncate_path(f['file_path'], 60)
+                # 类型名
+                f['_display_type'] = FILE_TYPE_NAMES.get(f['file_type'], f['file_type'])
+                # 类型颜色
+                f['_display_color'] = get_file_color(f['file_type'])
+                # 文件大小（格式化）
+                f['_display_size'] = format_size(f['file_size'])
+            
             self.data_loaded.emit(files, total_count)
         except Exception as e:
             self.load_error.emit(str(e))
+
+
+class FileTableModel(QAbstractTableModel):
+    """文件列表数据模型（View-Model 架构，零 QObject 开销）"""
+    COLUMNS = ["文件名", "路径", "类型", "大小", "修改时间", "分类"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._files = []          # 文件记录列表
+        self._cls_map = {}        # file_id → [classification_values]
+        self._id_to_row = {}      # file_id → row index
+
+    def set_files(self, files: list, cls_map: dict):
+        """设置模型数据（调用 beginResetModel/endResetModel 通知 View 全量刷新）"""
+        self.beginResetModel()
+        self._files = files
+        self._cls_map = cls_map
+        self._id_to_row = {f['id']: i for i, f in enumerate(files)}
+        self.endResetModel()
+
+    def get_record(self, row: int):
+        """获取指定行的文件记录"""
+        if 0 <= row < len(self._files):
+            return self._files[row]
+        return None
+
+    def get_record_by_id(self, file_id: int):
+        """通过 file_id 获取文件记录"""
+        row = self._id_to_row.get(file_id)
+        if row is not None:
+            return self._files[row]
+        return None
+
+    def get_file_id(self, row: int):
+        """获取指定行的 file_id"""
+        if 0 <= row < len(self._files):
+            return self._files[row]['id']
+        return None
+
+    def rowCount(self, parent=QModelIndex()):
+        return len(self._files) if not parent.isValid() else 0
+
+    def columnCount(self, parent=QModelIndex()):
+        return len(self.COLUMNS) if not parent.isValid() else 0
+
+    def headerData(self, section, orientation, role):
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            if 0 <= section < len(self.COLUMNS):
+                return self.COLUMNS[section]
+        return super().headerData(section, orientation, role)
+
+    def data(self, index, role):
+        if not index.isValid():
+            return None
+        row, col = index.row(), index.column()
+        if row < 0 or row >= len(self._files):
+            return None
+        f = self._files[row]
+
+        if role == Qt.ItemDataRole.UserRole:
+            return f['id']
+
+        if role == Qt.ItemDataRole.DisplayRole:
+            if col == 0:
+                return f.get('_display_name')
+            elif col == 1:
+                return f.get('_display_path')
+            elif col == 2:
+                return f.get('_display_type')
+            elif col == 3:
+                return f.get('_display_size')
+            elif col == 4:
+                mtime = f.get('modify_time', '')
+                return str(mtime) if mtime else ""
+            elif col == 5:
+                cls_values = self._cls_map.get(f['id'], [])
+                return ", ".join(cls_values) if cls_values else "-"
+
+        if role == Qt.ItemDataRole.ToolTipRole:
+            if col == 0:
+                return f['file_name']
+            elif col == 1:
+                return f['file_path']
+
+        if role == Qt.ItemDataRole.ForegroundRole and col == 2:
+            color = f.get('_display_color')
+            if color:
+                return QColor(color)
+
+        return None
 
 
 class TreeLoadWorker(QThread):
@@ -111,7 +215,7 @@ class ClassifyTab(QWidget):
         self.meta_dao = MetadataDAO(db)
         self.classifier = FileClassifier()
         self.file_manager = FileManager()
-        self.page_size = 100
+        self.page_size = 500
         self.current_page = 0
         self._total_count = 0
         # 当前加载模式：'all' 或 ('classification', cls_type, cls_value)
@@ -198,23 +302,31 @@ class ClassifyTab(QWidget):
 
         right_layout.addLayout(batch_layout)
 
-        self.file_table = QTableWidget()
-        self.file_table.setColumnCount(6)
-        self.file_table.setHorizontalHeaderLabels(["文件名", "路径", "类型", "大小", "修改时间", "分类"])
-        self.file_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        self.file_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-        self.file_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        self.file_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-        self.file_table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        self.file_table.horizontalHeader().setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
-        self.file_table.setColumnWidth(0, 180)
+        self.file_table = QTableView()
+        self.file_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.file_table.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         self.file_table.setAlternatingRowColors(True)
-        self.file_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.file_table.setSelectionMode(QTableWidget.SelectionMode.MultiSelection)
         self.file_table.setSortingEnabled(True)
         self.file_table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.file_table.customContextMenuRequested.connect(self._show_context_menu)
-        self.file_table.itemSelectionChanged.connect(self._on_selection_changed)
+
+        # 创建数据模型并绑定
+        self._file_model = FileTableModel(self)
+        self.file_table.setModel(self._file_model)
+
+        # 列宽设置
+        header = self.file_table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+        self.file_table.setColumnWidth(0, 180)
+
+        # 选中信号改用 selectionModel
+        self.file_table.selectionModel().selectionChanged.connect(
+            self._on_selection_changed)
         right_layout.addWidget(self.file_table)
 
         # 空状态引导
@@ -466,10 +578,6 @@ class ClassifyTab(QWidget):
         if self.current_page >= total_pages:
             self.current_page = total_pages - 1
 
-        # 清除选中状态（避免切换页面时残留）
-        self.file_table.clearSelection()
-        
-        self.file_table.setRowCount(len(files))
         self.file_count_label.setText(f"共 {total} 个文件")
 
         # 空状态检测
@@ -483,32 +591,8 @@ class ClassifyTab(QWidget):
         except Exception:
             cls_map = {}
 
-        for i, f in enumerate(files):
-            item = QTableWidgetItem(get_file_icon(f['file_type']) + f['file_name'])
-            item.setData(Qt.ItemDataRole.UserRole, f['id'])
-            item.setToolTip(f['file_name'])
-            self.file_table.setItem(i, 0, item)
-            path = f['file_path']
-            display_path = truncate_path(path, 60)
-            path_item = QTableWidgetItem(display_path)
-            path_item.setToolTip(path)
-            self.file_table.setItem(i, 1, path_item)
-
-            type_name = FILE_TYPE_NAMES.get(f['file_type'], f['file_type'])
-            type_item = QTableWidgetItem(type_name)
-            type_item.setForeground(QBrush(QColor(get_file_color(f['file_type']))))
-            self.file_table.setItem(i, 2, type_item)
-
-            size_str = format_size(f['file_size'])
-            self.file_table.setItem(i, 3, QTableWidgetItem(size_str))
-
-            mtime = f.get('modify_time', '')
-            self.file_table.setItem(i, 4, QTableWidgetItem(str(mtime) if mtime else ""))
-
-            # 使用批量查询结果
-            cls_values = cls_map.get(f['id'], [])
-            cls_text = ", ".join(cls_values) if cls_values else "-"
-            self.file_table.setItem(i, 5, QTableWidgetItem(cls_text))
+        # ── 直接设置模型数据，零 Q表单项创建 ──
+        self._file_model.set_files(files, cls_map)
 
         # 更新分页状态
         self.page_label.setText(f"第 {self.current_page + 1} 页 / 共 {total_pages} 页")
@@ -526,32 +610,30 @@ class ClassifyTab(QWidget):
             self.current_page += 1
             self._reload_page()
 
-    def _on_selection_changed(self):
+    def _on_selection_changed(self, selected=None, deselected=None):
         count = len(self.file_table.selectionModel().selectedRows())
         self.selected_label.setText(f"已选 {count} 个文件" if count > 0 else "")
         # 更新预览面板
         if count == 1:
             rows = self.file_table.selectionModel().selectedRows()
             if rows:
-                item = self.file_table.item(rows[0].row(), 0)
-                if item:
-                    fid = item.data(Qt.ItemDataRole.UserRole)
+                fid = self._file_model.data(rows[0], Qt.ItemDataRole.UserRole)
+                if fid is not None:
                     self._show_preview(fid)
                     return
         self._clear_preview()
 
     def _show_context_menu(self, pos):
-        """文件列表右键菜单"""
+        """文件列表右键菜单（通过 Model 获取数据，零数据库查询）"""
         row = self.file_table.rowAt(pos.y())
         if row < 0:
             return
-        item = self.file_table.item(row, 0)
-        if not item:
-            return
-        file_id = item.data(Qt.ItemDataRole.UserRole)
+        file_id = self._file_model.get_file_id(row)
         if file_id is None:
             return
-        record = self.file_dao.get_by_id(file_id)
+
+        # 从模型缓存获取 record
+        record = self._file_model.get_record(row)
         if not record:
             return
 
@@ -663,7 +745,9 @@ class ClassifyTab(QWidget):
 
     def _context_rename(self, file_id):
         """右键菜单：重命名单个文件（需二次确认）"""
-        record = self.file_dao.get_by_id(file_id)
+        record = self._file_model.get_record_by_id(file_id)
+        if record is None:
+            record = self.file_dao.get_by_id(file_id)
         if not record:
             return
         new_name, ok = QInputDialog.getText(
@@ -697,7 +781,9 @@ class ClassifyTab(QWidget):
 
     def _context_permanent_delete(self, file_id):
         """右键菜单：永久删除文件（从硬盘清除）"""
-        record = self.file_dao.get_by_id(file_id)
+        record = self._file_model.get_record_by_id(file_id)
+        if record is None:
+            record = self.file_dao.get_by_id(file_id)
         if not record:
             return
         reply = QMessageBox.question(
@@ -727,11 +813,9 @@ class ClassifyTab(QWidget):
         if not rows:
             notify(self, "请先选择要重命名的文件", 'info', 2000)
             return
-        item = self.file_table.item(rows[0].row(), 0)
-        if item:
-            fid = item.data(Qt.ItemDataRole.UserRole)
-            if fid is not None:
-                self._context_rename(fid)
+        fid = self._file_model.data(rows[0], Qt.ItemDataRole.UserRole)
+        if fid is not None:
+            self._context_rename(fid)
 
     def delete_selected(self):
         """Delete 标记删除选中的文件"""
@@ -753,14 +837,12 @@ class ClassifyTab(QWidget):
             self.refresh_data()
 
     def _get_selected_ids(self):
-        """从表格选中行读取文件ID（基于单元格数据，不受排序影响）"""
+        """从表格选中行读取文件ID（通过 Model，不受排序影响）"""
         ids = []
         for idx in self.file_table.selectionModel().selectedRows():
-            item = self.file_table.item(idx.row(), 0)
-            if item:
-                fid = item.data(Qt.ItemDataRole.UserRole)
-                if fid is not None:
-                    ids.append(fid)
+            fid = self._file_model.data(idx, Qt.ItemDataRole.UserRole)
+            if fid is not None:
+                ids.append(fid)
         return ids
 
     def _batch_rename(self):
@@ -923,8 +1005,10 @@ class ClassifyTab(QWidget):
         return panel
 
     def _show_preview(self, file_id: int):
-        """显示文件预览"""
-        record = self.file_dao.get_by_id(file_id)
+        """显示文件预览（优先从模型缓存获取）"""
+        record = self._file_model.get_record_by_id(file_id)
+        if record is None:
+            record = self.file_dao.get_by_id(file_id)
         if not record:
             self._clear_preview()
             return

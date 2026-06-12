@@ -193,7 +193,7 @@ QComboBox QAbstractItemView {
 }
 
 /* 表格 */
-QTableWidget {
+QTableWidget, QTableView {
     background-color: #181825;
     alternate-background-color: #1e1e2e;
     color: #cdd6f4;
@@ -202,10 +202,10 @@ QTableWidget {
     border-radius: 6px;
     selection-background-color: #45475a;
 }
-QTableWidget::item {
+QTableWidget::item, QTableView::item {
     padding: 6px 8px;
 }
-QTableWidget::item:selected {
+QTableWidget::item:selected, QTableView::item:selected {
     background-color: #45475a;
     color: #cdd6f4;
 }
@@ -552,7 +552,7 @@ QComboBox QAbstractItemView {
 }
 
 /* 表格 */
-QTableWidget {
+QTableWidget, QTableView {
     background-color: #ffffff;
     alternate-background-color: #f5f5f9;
     color: #4c4f69;
@@ -561,10 +561,10 @@ QTableWidget {
     border-radius: 6px;
     selection-background-color: #dce0e8;
 }
-QTableWidget::item {
+QTableWidget::item, QTableView::item {
     padding: 6px 8px;
 }
-QTableWidget::item:selected {
+QTableWidget::item:selected, QTableView::item:selected {
     background-color: #dce0e8;
     color: #4c4f69;
 }
