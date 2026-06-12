@@ -8,6 +8,8 @@ from PyQt6.QtCore import QObject, QThread, pyqtSignal
 from database.db_manager import db
 from database.models import FileDAO, ClassificationDAO
 from core import FileClassifier
+from utils.display_utils import format_size, truncate_path, get_file_icon, get_file_color
+from config import FILE_TYPE_NAMES
 from utils.logger import logger
 
 
@@ -26,11 +28,12 @@ class DataCacheWorker(QThread):
         try:
             # 预加载分类树
             tree_data = self.classifier.get_classification_tree()
-            
+
             # 预加载"全部文件"的前 100 条
             all_files = self.file_dao.get_all_active_paginated(page=0, page_size=100)
             all_count = self.file_dao.count_active()
-            
+            self._compute_display_fields(all_files)
+
             # 预加载每个分类的前 50 条（只预加载文件数 > 10 的热门分类）
             hot_categories = {}
             for category, items in tree_data.items():
@@ -41,20 +44,31 @@ class DataCacheWorker(QThread):
                         try:
                             files = self.file_dao.get_classification_paginated(
                                 db_type, value, page=0, page_size=50)
+                            self._compute_display_fields(files)
                             hot_categories[f"{db_type}_{value}"] = (files, count)
                         except Exception as e:
                             logger.debug(f"预加载分类失败 {category}/{value}: {e}")
-            
+
             logger.info(f"预加载完成: 分类树 {len(tree_data)} 维, "
                        f"全部文件 {all_count} 条, "
                        f"热门分类 {len(hot_categories)} 个")
-            
+
             self.preload_finished.emit(tree_data, {
                 'all_files': (all_files, all_count),
                 'hot_categories': hot_categories
             })
         except Exception as e:
             self.preload_error.emit(str(e))
+
+    @staticmethod
+    def _compute_display_fields(files):
+        """在后台线程预计算所有显示字段（与 DataLoadWorker.run 保持一致）"""
+        for f in files:
+            f['_display_name'] = get_file_icon(f['file_type']) + f['file_name']
+            f['_display_path'] = truncate_path(f['file_path'], 60)
+            f['_display_type'] = FILE_TYPE_NAMES.get(f['file_type'], f['file_type'])
+            f['_display_color'] = get_file_color(f['file_type'])
+            f['_display_size'] = format_size(f['file_size'])
 
 
 class GlobalDataCache(QObject):

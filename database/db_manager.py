@@ -5,8 +5,6 @@ MySQL数据库连接管理器（线程安全）
 """
 import threading
 import pymysql
-from pymysql.cursors import DictCursor
-from contextlib import contextmanager
 import os
 
 from config import MYSQL_CONFIG
@@ -50,17 +48,30 @@ class DBManager:
                 pass
             self._local.connection = None
 
+    @staticmethod
+    def _to_dicts(cursor, rows):
+        """将普通 cursor 的 tuple 结果转为 dict 列表，完全绕过 PyMySQL DictCursor 的类型转换 bug"""
+        if not rows:
+            return []
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in rows]
+
     def execute_query(self, sql, params=None):
         conn = self._get_local_connection()
-        with conn.cursor(DictCursor) as cursor:
+        with conn.cursor() as cursor:
             cursor.execute(sql, params)
-            return cursor.fetchall()
+            rows = cursor.fetchall()
+            return self._to_dicts(cursor, rows)
 
     def execute_one(self, sql, params=None):
         conn = self._get_local_connection()
-        with conn.cursor(DictCursor) as cursor:
+        with conn.cursor() as cursor:
             cursor.execute(sql, params)
-            return cursor.fetchone()
+            row = cursor.fetchone()
+            if row:
+                columns = [col[0] for col in cursor.description]
+                return dict(zip(columns, row))
+            return None
 
     def execute_update(self, sql, params=None):
         conn = self._get_local_connection()
@@ -94,28 +105,6 @@ class DBManager:
         except Exception as e:
             conn.rollback()
             raise e
-
-    @contextmanager
-    def transaction(self):
-        """事务上下文管理器，支持批量操作原子提交/回滚。
-
-        用法:
-            with db.transaction() as cur:
-                cur.execute("INSERT INTO ...", (...))
-                cur.execute("UPDATE ...", (...))
-            # 成功自动 commit，异常自动 rollback
-        """
-        conn = self._get_local_connection()
-        conn.autocommit(False)
-        try:
-            with conn.cursor(DictCursor) as cursor:
-                yield cursor
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.autocommit(True)
 
     def init_database(self):
         """读取并执行初始化SQL脚本（幂等：已初始化则跳过）"""

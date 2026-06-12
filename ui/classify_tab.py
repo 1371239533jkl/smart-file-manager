@@ -5,7 +5,8 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QSplitter, QTreeWidget,
     QTreeWidgetItem, QTableView, QAbstractItemView, QPushButton,
     QLabel, QMessageBox, QHeaderView, QInputDialog, QFileDialog,
-    QMenu, QApplication, QProgressBar, QFrame
+    QMenu, QApplication, QProgressBar, QFrame, QTextEdit, QScrollArea,
+    QStackedWidget, QSizePolicy
 )
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QAbstractTableModel, QModelIndex
 from PyQt6.QtGui import QColor, QBrush, QPixmap
@@ -237,6 +238,51 @@ class ClassifyTab(QWidget):
         # 全局数据缓存服务
         self._global_cache = GlobalDataCache.get_instance()
         self._init_ui()
+
+    # ──── 多文件类型预览：扩展名与工具方法 ────
+
+    CODE_EXTS = {
+        '.py', '.js', '.ts', '.jsx', '.tsx', '.java', '.cpp', '.c', '.h', '.hpp',
+        '.html', '.htm', '.css', '.scss', '.less', '.sql', '.php', '.rb', '.go',
+        '.rs', '.swift', '.kt', '.sh', '.bat', '.ps1', '.vue', '.svelte',
+        '.xml', '.yaml', '.yml', '.toml', '.json', '.ini', '.cfg', '.r', '.lua',
+        '.dart', '.scala', '.pl', '.m', '.mm',
+    }
+
+    TEXT_EXTS = {'.txt', '.csv', '.log', '.md', '.rst', '.readme', '.tsv'}
+
+    PDF_EXTS = {'.pdf'}
+
+    DOCX_EXTS = {'.docx', '.pptx'}
+
+    DOC_EXTS = {'.doc', '.ppt'}
+
+    @staticmethod
+    def _is_text_file(ext):
+        ext = ext.lower()
+        return ext in ClassifyTab.CODE_EXTS or ext in ClassifyTab.TEXT_EXTS
+
+    @staticmethod
+    def _detect_encoding(file_path):
+        encodings = ['utf-8-sig', 'utf-8', 'gbk', 'gb18030', 'gb2312', 'latin-1']
+        for enc in encodings:
+            try:
+                with open(file_path, 'r', encoding=enc) as f:
+                    f.read(4096)
+                return enc
+            except (UnicodeDecodeError, UnicodeError):
+                continue
+        return 'utf-8'
+
+    @staticmethod
+    def _read_file_content(file_path, max_chars=100000):
+        encoding = ClassifyTab._detect_encoding(file_path)
+        try:
+            with open(file_path, 'r', encoding=encoding, errors='replace') as f:
+                content = f.read(max_chars)
+            return content, encoding
+        except Exception:
+            return None, None
 
     def _init_ui(self):
         layout = QVBoxLayout(self)
@@ -637,14 +683,8 @@ class ClassifyTab(QWidget):
         if not record:
             return
 
-        # 标准化路径（关键修复）
         file_path = record.get('file_path', '')
-        # 确保 file_path 是字符串类型
-        if not isinstance(file_path, str) or not file_path:
-            logger.warning(f"文件路径无效: {file_path} (type: {type(file_path).__name__})")
-            file_path = ''
-        else:
-            file_path = os.path.normpath(file_path)
+        file_path = os.path.normpath(file_path) if isinstance(file_path, str) and file_path else ''
         
         logger.debug(f"右键菜单 - 文件路径: {file_path}")
 
@@ -939,9 +979,9 @@ class ClassifyTab(QWidget):
     # ── 文件预览面板 ──
 
     def _build_preview_panel(self) -> QWidget:
-        """构建右侧文件预览面板"""
+        """构建右侧文件预览面板（支持图片/文本/代码/PDF）"""
         panel = QFrame()
-        panel.setFixedWidth(230)
+        panel.setMinimumWidth(230)
         panel.setFrameShape(QFrame.Shape.StyledPanel)
         panel.setStyleSheet(
             "QFrame { background-color: #1e1e2e; border: 1px solid #313244; "
@@ -958,17 +998,63 @@ class ClassifyTab(QWidget):
             "border: none; background: transparent;")
         self._preview_layout.addWidget(self._preview_title)
 
-        # 图片预览区域
+        # 多类型预览栈
+        self._preview_stack = QStackedWidget()
+        self._preview_stack.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._preview_stack.setStyleSheet(
+            "background-color: #181825; border-radius: 4px; border: none;")
+
+        # 页面 0：占位提示
+        self._preview_placeholder = QLabel("选择文件查看详情")
+        self._preview_placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._preview_placeholder.setStyleSheet(
+            "color: #585b70; font-size: 11px; background: transparent;")
+        self._preview_stack.addWidget(self._preview_placeholder)
+
+        # 页面 1：图片预览
         self._preview_image = QLabel()
-        self._preview_image.setFixedSize(210, 140)
         self._preview_image.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._preview_image.setStyleSheet(
-            "background-color: #181825; border-radius: 4px; border: none;")
-        self._preview_image.setText("选择文件查看详情")
-        self._preview_image.setStyleSheet(
-            "color: #585b70; background-color: #181825; "
-            "border-radius: 4px; border: none;")
-        self._preview_layout.addWidget(self._preview_image)
+            "color: #585b70; background: transparent;")
+        self._preview_stack.addWidget(self._preview_image)
+
+        # 页面 2：文本 / 代码预览
+        self._preview_text = QTextEdit()
+        self._preview_text.setReadOnly(True)
+        self._preview_text.setStyleSheet(
+            "QTextEdit {"
+            "  color: #cdd6f4;"
+            "  background-color: #181825;"
+            "  border: none;"
+            "  font-family: 'Consolas', 'Courier New', monospace;"
+            "  font-size: 11px;"
+            "}"
+            "QScrollBar:vertical { background: #181825; width: 6px; }"
+            "QScrollBar::handle:vertical { background: #45475a; border-radius: 3px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+        )
+        self._preview_stack.addWidget(self._preview_text)
+
+        # 页面 3：PDF 预览
+        self._preview_pdf = QScrollArea()
+        self._preview_pdf.setWidgetResizable(True)
+        self._preview_pdf.setStyleSheet(
+            "QScrollArea { background-color: #181825; border: none; }"
+            "QScrollBar:vertical { background: #181825; width: 6px; }"
+            "QScrollBar::handle:vertical { background: #45475a; border-radius: 3px; }"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }"
+        )
+        self._preview_pdf_container = QWidget()
+        self._preview_pdf_container.setStyleSheet("background: transparent;")
+        self._preview_pdf_layout = QVBoxLayout(self._preview_pdf_container)
+        self._preview_pdf_layout.setContentsMargins(4, 4, 4, 4)
+        self._preview_pdf_layout.setSpacing(4)
+        self._preview_pdf_layout.addStretch()
+        self._preview_pdf.setWidget(self._preview_pdf_container)
+        self._preview_stack.addWidget(self._preview_pdf)
+
+        self._preview_layout.addWidget(self._preview_stack)
 
         # 文件信息区域
         self._preview_info = QLabel()
@@ -1005,7 +1091,7 @@ class ClassifyTab(QWidget):
         return panel
 
     def _show_preview(self, file_id: int):
-        """显示文件预览（优先从模型缓存获取）"""
+        """显示文件预览（支持图片/文本/代码/PDF）"""
         record = self._file_model.get_record_by_id(file_id)
         if record is None:
             record = self.file_dao.get_by_id(file_id)
@@ -1023,7 +1109,7 @@ class ClassifyTab(QWidget):
         file_type = record.get('file_type', 'other')
         file_size = record.get('file_size', 0)
         mtime = record.get('modify_time', '')
-        ext = record.get('file_extension', '')
+        ext = record.get('file_extension', '').lower()
 
         self._preview_title.setText(f"📝 {file_name[:20]}")
         self._preview_title.setWordWrap(True)
@@ -1056,34 +1142,31 @@ class ClassifyTab(QWidget):
 
         self._preview_info.setText("\n".join(info_lines))
 
-        # 图片缩略图
+        # 根据文件类型路由到对应预览方法
         if file_type == 'image' and os.path.exists(file_path):
-            try:
-                pixmap = QPixmap(file_path)
-                if not pixmap.isNull():
-                    scaled = pixmap.scaled(
-                        QSize(210, 140),
-                        Qt.AspectRatioMode.KeepAspectRatio,
-                        Qt.TransformationMode.SmoothTransformation)
-                    self._preview_image.setPixmap(scaled)
-                else:
-                    self._preview_image.setText("无法加载图片")
-            except Exception:
-                self._preview_image.setText("无法加载图片")
+            self._preview_image_file(file_path)
+        elif ext in self.PDF_EXTS and os.path.exists(file_path):
+            self._preview_pdf_file(file_path, file_name)
+        elif ext in self.DOCX_EXTS and os.path.exists(file_path):
+            self._preview_office_file(file_path, file_name, ext)
+        elif ext in self.DOC_EXTS and os.path.exists(file_path):
+            self._preview_legacy_doc(file_path, file_name, ext)
+        elif self._is_text_file(ext) and os.path.exists(file_path):
+            self._preview_text_file(file_path, file_name, ext)
         else:
-            icon = get_file_icon(file_type)
-            self._preview_image.setText(f"{icon}\n{type_name}")
-            self._preview_image.setStyleSheet(
-                "color: #a6adc8; background-color: #181825; "
-                "border-radius: 4px; border: none; font-size: 14px;")
+            # 不支持预览的类型：显示图标占位
+            self._preview_stack.setCurrentIndex(0)
+            self._preview_placeholder.setText(f"{get_file_icon(file_type)}\n{type_name}")
+            self._preview_placeholder.setStyleSheet(
+                "color: #a6adc8; font-size: 14px; background: transparent;")
+            self._preview_panel.setMinimumWidth(230)
+            self._splitter.setSizes([180, 580, 230])
 
         # 快捷按钮
         self._preview_open_btn.setVisible(True)
         self._preview_folder_btn.setVisible(True)
-        
-        # 保存当前文件路径到实例变量，供按钮点击时使用
         self._current_preview_path = file_path
-        
+
         try:
             self._preview_open_btn.clicked.disconnect()
             self._preview_folder_btn.clicked.disconnect()
@@ -1092,18 +1175,253 @@ class ClassifyTab(QWidget):
         self._preview_open_btn.clicked.connect(self._on_open_file_clicked)
         self._preview_folder_btn.clicked.connect(self._on_open_folder_clicked)
 
+    # ── 各类型预览子方法 ──
+
+    def _preview_image_file(self, file_path):
+        """图片文件预览"""
+        self._preview_stack.setCurrentIndex(1)
+        self._preview_panel.setMinimumWidth(230)
+        self._splitter.setSizes([180, 580, 230])
+        try:
+            pixmap = QPixmap(file_path)
+            if not pixmap.isNull():
+                scaled = pixmap.scaled(
+                    QSize(210, 140),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation)
+                self._preview_image.setPixmap(scaled)
+            else:
+                self._preview_image.setText("无法加载图片")
+        except Exception:
+            self._preview_image.setText("无法加载图片")
+
+    def _preview_text_file(self, file_path, file_name, ext):
+        """文本文件预览（TXT/CSV/LOG/MD 等）"""
+        content, encoding = self._read_file_content(file_path)
+        if content is None:
+            self._preview_stack.setCurrentIndex(0)
+            self._preview_placeholder.setText("无法读取文件内容")
+            self._preview_placeholder.setStyleSheet(
+                "color: #585b70; font-size: 11px; background: transparent;")
+            return
+
+        self._preview_stack.setCurrentIndex(2)
+        self._preview_panel.setMinimumWidth(380)
+        self._splitter.setSizes([180, 430, 380])
+
+        # 代码文件启用语法高亮，纯文本文件直接显示
+        if ext in self.CODE_EXTS:
+            self._preview_code_content(file_path, file_name, content)
+        else:
+            self._preview_text.setPlainText(content)
+
+        self._preview_title.setText(f"📄 {file_name[:18]} ({encoding})")
+
+    def _preview_code_content(self, file_path, file_name, content):
+        """代码文件语法高亮"""
+        try:
+            from pygments import highlight
+            from pygments.lexers import get_lexer_for_filename, TextLexer
+            from pygments.formatters import HtmlFormatter
+
+            try:
+                lexer = get_lexer_for_filename(file_name)
+            except Exception:
+                lexer = TextLexer()
+
+            formatter = HtmlFormatter(
+                style='monokai', full=False, linenos=False,
+                noclasses=True, nowrap=False,
+            )
+            highlighted = highlight(content, lexer, formatter)
+            self._preview_text.setHtml(highlighted)
+        except Exception:
+            self._preview_text.setPlainText(content)
+
+    def _preview_office_file(self, file_path, file_name, ext):
+        """Office 文档预览（.docx/.pptx 文本提取）"""
+        self._preview_stack.setCurrentIndex(2)
+        self._preview_panel.setMinimumWidth(380)
+        self._splitter.setSizes([180, 430, 380])
+
+        try:
+            if ext == '.docx':
+                from docx import Document
+                doc = Document(file_path)
+                paragraphs = [p.text for p in doc.paragraphs if p.text.strip()]
+                content = "\n".join(paragraphs[:200])  # 最多 200 段
+                icon = "📄"
+                title_suffix = "Word 文档"
+            elif ext == '.pptx':
+                from pptx import Presentation
+                prs = Presentation(file_path)
+                slides_text = []
+                for i, slide in enumerate(prs.slides[:10]):  # 最多 10 张幻灯片
+                    slide_texts = []
+                    for shape in slide.shapes:
+                        if shape.has_text_frame:
+                            for para in shape.text_frame.paragraphs:
+                                t = para.text.strip()
+                                if t:
+                                    slide_texts.append(t)
+                    if slide_texts:
+                        slides_text.append(f"── 幻灯片 {i+1} ──\n" + "\n".join(slide_texts))
+                content = "\n\n".join(slides_text)
+                icon = "📊"
+                title_suffix = "PPT 演示文稿"
+            else:
+                content = "不支持的 Office 格式"
+                icon = "📄"
+                title_suffix = "文档"
+
+            if not content:
+                content = "(文档无文本内容)"
+
+            self._preview_text.setPlainText(content)
+            self._preview_title.setText(f"{icon} {file_name[:18]} ({title_suffix})")
+
+        except ImportError as e:
+            missing = str(e).split()[-1] if str(e).split() else '未知'
+            self._preview_text.setPlainText(f"预览需安装 {missing}\npip install python-docx python-pptx")
+        except Exception as e:
+            self._preview_text.setPlainText(f"文档预览失败: {e}")
+
+    def _preview_legacy_doc(self, file_path, file_name, ext):
+        """旧版 .doc/.ppt 文件预览（二进制格式，尝试提取可读文本）"""
+        self._preview_stack.setCurrentIndex(2)
+        self._preview_panel.setMinimumWidth(380)
+        self._splitter.setSizes([180, 430, 380])
+
+        # 尝试从二进制中提取可读文本段（UTF-16 LE 编码的文本可能嵌入在 .doc 中）
+        try:
+            with open(file_path, 'rb') as f:
+                data = f.read(100000)
+
+            # 尝试 UTF-16 LE 解码（旧 .doc 常用编码）
+            try:
+                text = data.decode('utf-16-le', errors='ignore')
+                # 过滤掉控制字符，保留可打印文本
+                import re
+                clean = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', text)
+                # 提取连续的中文/英文段落
+                parts = [p.strip() for p in clean.split('\x00') if len(p.strip()) > 2]
+                content = "\n".join(parts[:100]) if parts else None
+            except Exception:
+                content = None
+
+            if content and len(content) > 20:
+                self._preview_text.setPlainText(content[:50000])
+                self._preview_title.setText(f"📄 {file_name[:18]} (旧版文档, 文本提取)")
+            else:
+                self._preview_text.setPlainText(
+                    "旧版 .doc 格式无法直接预览\n"
+                    "请使用「打开」按钮用 Word 查看\n\n"
+                    "提示：可在 Word 中另存为 .docx 以支持预览"
+                )
+                self._preview_title.setText(f"📄 {file_name[:18]} (旧版 .doc)")
+        except Exception:
+            self._preview_text.setPlainText("旧版文档读取失败，请使用「打开」按钮查看")
+
+    def _preview_pdf_file(self, file_path, file_name):
+        """PDF 文件预览（渲染页面为图片）"""
+        # 清空旧页面
+        while self._preview_pdf_layout.count() > 1:
+            item = self._preview_pdf_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        self._preview_stack.setCurrentIndex(3)
+        self._preview_panel.setMinimumWidth(380)
+        self._splitter.setSizes([180, 430, 380])
+
+        try:
+            import fitz
+            doc = fitz.open(file_path)
+            total_pages = doc.page_count
+            max_pages = min(total_pages, 20)
+            preview_width = 350
+
+            for i in range(max_pages):
+                page = doc[i]
+                zoom = preview_width / page.rect.width
+                mat = fitz.Matrix(zoom, zoom)
+                pix = page.get_pixmap(matrix=mat)
+                img_data = pix.tobytes("png")
+
+                page_pixmap = QPixmap()
+                page_pixmap.loadFromData(img_data)
+
+                page_label = QLabel()
+                page_label.setPixmap(page_pixmap)
+                page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+                page_num_label = QLabel(f"第 {i+1}/{total_pages} 页")
+                page_num_label.setStyleSheet(
+                    "color: #a6adc8; font-size: 10px; font-weight: bold; "
+                    "border: none; background: transparent;")
+                page_num_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+                insert_pos = self._preview_pdf_layout.count() - 1
+                self._preview_pdf_layout.insertWidget(insert_pos, page_label)
+                self._preview_pdf_layout.insertWidget(insert_pos + 1, page_num_label)
+
+            doc.close()
+
+            if total_pages > max_pages:
+                more_label = QLabel(f"... 共 {total_pages} 页，仅预览前 {max_pages} 页")
+                more_label.setStyleSheet(
+                    "color: #585b70; font-size: 10px; border: none; background: transparent;")
+                more_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                insert_pos = self._preview_pdf_layout.count() - 1
+                self._preview_pdf_layout.insertWidget(insert_pos, more_label)
+
+            self._preview_pdf.verticalScrollBar().setValue(0)
+
+        except ImportError:
+            self._preview_stack.setCurrentIndex(0)
+            self._preview_placeholder.setText("PDF 预览需 PyMuPDF\npip install PyMuPDF")
+            self._preview_placeholder.setStyleSheet(
+                "color: #585b70; font-size: 11px; background: transparent;")
+        except Exception as e:
+            # 渲染失败则降级为 PyPDF2 文本提取
+            self._preview_stack.setCurrentIndex(2)
+            self._preview_panel.setMinimumWidth(380)
+            self._splitter.setSizes([180, 430, 380])
+            try:
+                from PyPDF2 import PdfReader
+                reader = PdfReader(file_path)
+                text_parts = []
+                for i, page in enumerate(reader.pages[:5]):
+                    text = page.extract_text()
+                    if text:
+                        text_parts.append(f"--- 第 {i+1}/{len(reader.pages)} 页 ---\n{text}")
+                if text_parts:
+                    self._preview_text.setPlainText("\n\n".join(text_parts))
+                    self._preview_title.setText(f"📕 {file_name[:18]} (文本提取)")
+                else:
+                    self._preview_text.setPlainText("PDF 无文本内容或内容无法提取")
+            except Exception:
+                self._preview_text.setPlainText(f"PDF 预览失败: {e}")
+
     def _clear_preview(self):
         """清空并折叠预览面板"""
-        self._current_preview_path = None  # 清除路径
+        self._current_preview_path = None
         self._preview_title.setText("文件预览")
+        self._preview_stack.setCurrentIndex(0)
+        self._preview_placeholder.setText("选择文件查看详情")
+        self._preview_placeholder.setStyleSheet(
+            "color: #585b70; font-size: 11px; background: transparent;")
         self._preview_image.clear()
-        self._preview_image.setText("选择文件查看详情")
-        self._preview_image.setStyleSheet(
-            "color: #585b70; background-color: #181825; "
-            "border-radius: 4px; border: none;")
+        self._preview_text.clear()
+        # 清空 PDF 页面
+        while self._preview_pdf_layout.count() > 1:
+            item = self._preview_pdf_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
         self._preview_info.setText("")
         self._preview_open_btn.setVisible(False)
         self._preview_folder_btn.setVisible(False)
+        self._preview_panel.setMinimumWidth(230)
         # 折叠面板
         if self._preview_panel.isVisible():
             self._preview_panel.setVisible(False)

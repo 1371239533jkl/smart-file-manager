@@ -25,7 +25,7 @@ MYSQL_CONFIG = {
     'password': os.getenv('SMART_FM_DB_PASSWORD', '123456'),
     'database': 'smart_file_manager',
     'charset': 'utf8mb4',
-    'autocommit': True
+    'autocommit': True,
 }
 
 # 文件类型定义
